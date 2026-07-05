@@ -1,0 +1,8 @@
+{
+  "name": "Chrysty",
+  "slug": "chrysty",
+  "url": "chrysty.chrysty.dev",
+  "category": "Productivity",
+  "tags": ["voice", "camera", "companion", "pwa"],
+  "description": "Voice-first AI companion with camera vision and PWA installability."
+}

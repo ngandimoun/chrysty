@@ -1,0 +1,353 @@
+{
+  "generatedAt": "2026-07-05T03:28:06.442Z",
+  "astraKey": "ak_chrysty_benchmark_suite",
+  "origin": "https://localhost:3000",
+  "filterId": null,
+  "summary": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0,
+    "totalDurationMs": 100268
+  },
+  "cases": [
+    {
+      "id": "delegate-research-report",
+      "category": "should-delegate",
+      "status": "pass",
+      "durationMs": 14548.867,
+      "routeMs": 0,
+      "llmMs": 14548.230800000001,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": true,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [
+          "delegateBackgroundTask"
+        ],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "function_call",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [
+        "delegateBackgroundTask"
+      ],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "I've started a deep research task for you. Our background crew is now analyzing AI startups building browser agents, including players like MultiOn, Adept, and Induced AI. They'll build a detailed comparison report mapping out their technology, features, and market positioning. It'll be ready in your Documents workspace in a few minutes, and you can keep talking to me while they work on it.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "delegate-study-kit",
+      "category": "should-delegate",
+      "status": "pass",
+      "durationMs": 24596.260400000003,
+      "routeMs": 0,
+      "llmMs": 24596.1264,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": true,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [
+          "delegateBackgroundTask"
+        ],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "function_call",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [
+        "delegateBackgroundTask"
+      ],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "I've started building a complete Quantum Mechanics study kit for your exam tomorrow! My background crew is assembling a high-yield package with formula sheets, step-by-step practice problems, and common pitfalls to avoid. It will be ready in your Documents workspace in just a few minutes. In the meantime, I've loaded a quick-review cheat sheet on your screen, and you can dive into interactive practice over at Chrysty AI Learning.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "delegate-trip-plan",
+      "category": "should-delegate",
+      "status": "pass",
+      "durationMs": 17046.447400000005,
+      "routeMs": 0,
+      "llmMs": 17045.7886,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": true,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [
+          "delegateBackgroundTask"
+        ],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "function_call",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [
+        "delegateBackgroundTask"
+      ],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "I've got you covered. I've set my background crew to work on building a complete five-day Japan trip plan under fifteen hundred dollars. They are mapping out an optimized itinerary to save you time, finding budget-friendly accommodations like capsule and business hotels, and breaking down a daily food and transport budget. The finished guide and budget sheets will be ready in your Documents workspace in just a few minutes.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "no-delegate-calculator",
+      "category": "should-not-delegate",
+      "status": "pass",
+      "durationMs": 10586.319900000002,
+      "routeMs": 0,
+      "llmMs": 10586.153300000005,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": true,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [
+          "calculator"
+        ],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "function_call",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [
+        "calculator"
+      ],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "15 percent of 280 is 42. An easy way to calculate this in your head is to find 10 percent, which is 28, and then add half of that, which is 14.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "no-delegate-greeting",
+      "category": "should-not-delegate",
+      "status": "pass",
+      "durationMs": 5666.7764000000025,
+      "routeMs": 0,
+      "llmMs": 5666.704599999997,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": false,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "I'm doing really well, thank you! How are you doing today?",
+      "needsVisualExplanation": false,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "no-delegate-static-fact",
+      "category": "should-not-delegate",
+      "status": "pass",
+      "durationMs": 6540.155400000003,
+      "routeMs": 0,
+      "llmMs": 6540.089300000007,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": false,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "The capital of France is Paris.",
+      "needsVisualExplanation": false,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "no-delegate-convert",
+      "category": "should-not-delegate",
+      "status": "pass",
+      "durationMs": 9111.604999999996,
+      "routeMs": 0,
+      "llmMs": 9111.561699999991,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": false,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": false,
+        "usedCustomTools": true,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [
+          "convert"
+        ],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "function_call",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [
+        "convert"
+      ],
+      "toolsLabel": "custom_tools",
+      "spokenPreview": "72 degrees Fahrenheit is equal to approximately 22.2 degrees Celsius.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    },
+    {
+      "id": "no-delegate-python",
+      "category": "should-not-delegate",
+      "status": "pass",
+      "durationMs": 12163.2396,
+      "routeMs": 0,
+      "llmMs": 12163.176800000001,
+      "selection": {
+        "google_search": false,
+        "google_maps": false,
+        "url_context": false,
+        "code_execution": true,
+        "custom_tools": true
+      },
+      "grounding": {
+        "usedSearch": false,
+        "usedMaps": false,
+        "usedUrlContext": false,
+        "usedCodeExecution": true,
+        "usedCustomTools": false,
+        "webCitations": [],
+        "places": [],
+        "codeImages": [],
+        "customToolCalls": [],
+        "retrievedUrlCount": 0
+      },
+      "stepTypes": [
+        "code_execution_call",
+        "code_execution_result",
+        "thought",
+        "model_output"
+      ],
+      "customToolCalls": [],
+      "toolsLabel": "code_execution, custom_tools",
+      "spokenPreview": "Using Python, the sum of 12, 34, and 56 is 102.",
+      "needsVisualExplanation": true,
+      "chartCount": 0,
+      "charts": [],
+      "warnings": [],
+      "failures": []
+    }
+  ]
+}

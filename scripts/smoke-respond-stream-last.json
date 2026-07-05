@@ -1,0 +1,53 @@
+{
+  "summary": {
+    "httpStatus": 200,
+    "elapsedMs": 26514,
+    "eventTypes": [
+      "audio",
+      "done"
+    ],
+    "audioChunkCount": 1,
+    "hasExplanationStart": false,
+    "hasExplanationDelta": false,
+    "hasTtsError": false,
+    "hasError": false,
+    "done": {
+      "timings": {
+        "audioDurationMs": 1500,
+        "sttMs": 4241.17669999972,
+        "llmMs": 4085.2226999998093,
+        "understandingMs": 13174.001000000164,
+        "ttsFirstAudioMs": 10279.190799999982,
+        "ttsMs": 10279.190799999982,
+        "totalMs": 24717.574699999765
+      },
+      "spoken_transcript": "Absolutely. Ensuring the safety and well-being of people really is the foundation for everything else. When that is the guiding priority, it makes complex decisions a lot clearer."
+    },
+    "error": null,
+    "ttsError": null
+  },
+  "events": [
+    {
+      "event": "audio",
+      "data": {
+        "sample_rate": 24000,
+        "bytes": 839680
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "timings": {
+          "audioDurationMs": 1500,
+          "sttMs": 4241.17669999972,
+          "llmMs": 4085.2226999998093,
+          "understandingMs": 13174.001000000164,
+          "ttsFirstAudioMs": 10279.190799999982,
+          "ttsMs": 10279.190799999982,
+          "totalMs": 24717.574699999765
+        },
+        "spoken_transcript": "Absolutely. Ensuring the safety and well-being of people really is the foundation for everything else. When that is the guiding priority, it makes complex decisions a lot clearer."
+      }
+    }
+  ]
+}

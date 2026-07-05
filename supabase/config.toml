@@ -1,0 +1,16 @@
+# Chrysty Astra — shared Supabase project (uusnstujtczqjorfqgdn)
+
+project_id = "uusnstujtczqjorfqgdn"
+
+[db]
+major_version = 15
+
+[auth]
+site_url = "https://localhost:3000"
+additional_redirect_urls = [
+  "https://localhost:3000/auth/callback",
+  "http://localhost:3000/auth/callback",
+  "https://127.0.0.1:3000/auth/callback",
+  "https://192.168.1.70:3000/auth/callback",
+  "https://192.168.1.69:3000/auth/callback",
+]

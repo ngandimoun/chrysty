@@ -1,0 +1,9 @@
+{
+  "explorer.excludeGitIgnore": false,
+  "files.exclude": {
+    "**/.env": true,
+    "**/.env.*": true,
+    "**/.next": true,
+    "**/node_modules": true
+  }
+}

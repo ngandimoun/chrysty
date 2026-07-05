@@ -1,26 +1,187 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "katex/dist/katex.min.css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.13 0 0);
+  --card: oklch(0.985 0 0);
+  --card-foreground: oklch(0.13 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.13 0 0);
+  --primary: oklch(0.77 0.14 205);
+  --primary-foreground: oklch(0.18 0.02 240);
+  --secondary: oklch(0.965 0 0);
+  --secondary-foreground: oklch(0.22 0 0);
+  --muted: oklch(0.965 0 0);
+  --muted-foreground: oklch(0.45 0 0);
+  --accent: oklch(0.955 0 0);
+  --accent-foreground: oklch(0.22 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.88 0 0);
+  --input: oklch(0.88 0 0);
+  --ring: oklch(0.77 0.14 205);
+  --radius: 0.75rem;
+  --surface: oklch(0.985 0 0);
+  --surface-elevated: oklch(1 0 0);
+  --brand: #1fd5f9;
+  --brand-listening: #ff2d9e;
+  --chart-grid: oklch(0.82 0 0);
+  --chart-tick: oklch(0.45 0 0);
+  --chart-legend: oklch(0.35 0 0);
+}
+
+.dark {
+  --background: oklch(0.13 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.19 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.17 0 0);
+  --popover-foreground: oklch(0.97 0 0);
+  --primary: oklch(0.77 0.14 205);
+  --primary-foreground: oklch(0.18 0.02 240);
+  --secondary: oklch(0.24 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.24 0 0);
+  --muted-foreground: oklch(0.68 0 0);
+  --accent: oklch(0.24 0 0);
+  --accent-foreground: oklch(0.97 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.77 0.14 205);
+  --surface: oklch(0.17 0 0);
+  --surface-elevated: oklch(0.21 0 0);
+  --brand: #1fd5f9;
+  --brand-listening: #ff2d9e;
+  --chart-grid: oklch(1 0 0 / 12%);
+  --chart-tick: oklch(0.68 0 0);
+  --chart-legend: oklch(0.82 0 0);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-brand: var(--brand);
+  --color-brand-listening: var(--brand-listening);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply h-full;
+  }
+
+  body {
+    @apply min-h-full bg-background font-sans text-foreground antialiased;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes listening-blob-drift-a {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(6%, 4%) scale(1.06);
+  }
+  66% {
+    transform: translate(3%, 8%) scale(0.97);
+  }
+}
+
+@keyframes listening-blob-drift-b {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: translate(-5%, -6%) scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+@keyframes listening-blob-drift-c {
+  0%,
+  100% {
+    transform: translate(-50%, 0) scale(1);
+    opacity: 0.85;
+  }
+  40% {
+    transform: translate(-46%, 3%) scale(1.04);
+    opacity: 0.75;
+  }
+  70% {
+    transform: translate(-54%, -2%) scale(0.98);
+    opacity: 0.9;
+  }
+}
+
+@layer utilities {
+  .listening-blob-drift-a {
+    animation: listening-blob-drift-a 14s ease-in-out infinite;
+  }
+
+  .listening-blob-drift-b {
+    animation: listening-blob-drift-b 17s ease-in-out infinite;
+  }
+
+  .listening-blob-drift-c {
+    animation: listening-blob-drift-c 12s ease-in-out infinite;
+  }
+}
+
+@layer components {
+  .explanation-prose {
+    @apply text-foreground;
+    font-variant-emoji: emoji;
+  }
+
+  .explanation-prose .katex {
+    color: inherit;
+    font-size: 1.05em;
+  }
+
+  .explanation-prose .katex-display {
+    @apply my-3 overflow-x-auto;
+  }
+
+  .explanation-prose table {
+    @apply border-collapse;
+  }
+
+  .explanation-prose :where(h1, h2, h3, h4):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+    @apply text-foreground;
+  }
 }

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="96" fill="#020617"/>
+  <circle cx="256" cy="256" r="120" fill="url(#aura)"/>
+  <defs>
+    <radialGradient id="aura" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 256) rotate(90) scale(120)">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="0.45" stop-color="#1FD5F9"/>
+      <stop offset="1" stop-color="#1FD5F9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+</svg>

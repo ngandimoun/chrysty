@@ -1,0 +1,305 @@
+{
+  "generatedAt": "2026-07-05T11:45:45.295Z",
+  "origin": "https://localhost:3000",
+  "astraKey": "ak_chrysty_benchmark_suite",
+  "summary": {
+    "total": 7,
+    "passed": 7,
+    "failed": 0
+  },
+  "cases": [
+    {
+      "id": "research-comparison-table",
+      "title": "Agent framework comparison",
+      "status": "pass",
+      "jobId": "a43a2929-b759-4b9b-941d-b209e27eff9e",
+      "documentCount": 2,
+      "documents": [
+        {
+          "id": "e5c11cfc-6c8b-4487-980e-59e7d0ece3f2",
+          "kind": "text",
+          "title": "Executive Summary — AI Agent Framework Comparison: LangGraph, Mastra, CrewAI, A…"
+        },
+        {
+          "id": "9f1ede96-dd54-4a89-816e-51430bb70090",
+          "kind": "text",
+          "title": "AI Agent Framework Comparison — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=2 text docs, got 2"
+          },
+          {
+            "id": "has-table",
+            "passed": true,
+            "detail": "expected GFM markdown table with header separator row"
+          },
+          {
+            "id": "has-links",
+            "passed": true,
+            "detail": "expected at least one http(s) source link in document text"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chart-market-trends",
+      "title": "Renewable energy market trends",
+      "status": "pass",
+      "jobId": "03a740d7-b011-431a-b7f2-0b32cb05956b",
+      "documentCount": 3,
+      "documents": [
+        {
+          "id": "1886847e-1366-4a99-83c7-24f37526ab94",
+          "kind": "chart",
+          "title": "Global Renewable Energy Capacity by Country (2024)"
+        },
+        {
+          "id": "23480803-fd6a-4a47-b25c-2c14fda97377",
+          "kind": "text",
+          "title": "Executive Summary: Global Renewable Energy Adoption Trends (2024)"
+        },
+        {
+          "id": "25267fc0-bf4e-450e-a789-515a8efa76a7",
+          "kind": "text",
+          "title": "Global Renewable Energy Adoption Trends — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-chart-docs",
+            "passed": true,
+            "detail": "expected >=1 chart doc, got 1"
+          },
+          {
+            "id": "min-text-summary",
+            "passed": true,
+            "detail": "expected >=1 text summary doc, got 2"
+          },
+          {
+            "id": "chart-spec-valid",
+            "passed": true,
+            "detail": "expected chart with series and data rows"
+          }
+        ]
+      }
+    },
+    {
+      "id": "math-physics-projectile",
+      "title": "Projectile motion study guide",
+      "status": "pass",
+      "jobId": "52eda70a-794a-419d-9fb1-f44579ba3c3d",
+      "documentCount": 3,
+      "documents": [
+        {
+          "id": "307983da-9747-40d3-a338-000a45e41ebd",
+          "kind": "text",
+          "title": "Projectile Motion Study Guide"
+        },
+        {
+          "id": "c5063cca-0132-4ff1-a7ff-71bf3e471d7a",
+          "kind": "text",
+          "title": "Projectile Motion Study Guide"
+        },
+        {
+          "id": "871884a5-1819-4d63-81b1-3ec41e86e00a",
+          "kind": "text",
+          "title": "Projectile Motion Study Guide — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=1 text doc"
+          },
+          {
+            "id": "has-katex",
+            "passed": true,
+            "detail": "expected inline or block KaTeX math ($...$ or $$...$$)"
+          },
+          {
+            "id": "has-numbered-steps",
+            "passed": true,
+            "detail": "expected numbered worked examples or steps"
+          }
+        ]
+      }
+    },
+    {
+      "id": "code-monte-carlo",
+      "title": "Monte Carlo pi estimation",
+      "status": "pass",
+      "jobId": "d32d22ff-cb9f-4541-b7e7-0bd168a073c5",
+      "documentCount": 3,
+      "documents": [
+        {
+          "id": "9ac1c41e-5082-43c8-870f-c3aec01cd3f8",
+          "kind": "text",
+          "title": "Monte Carlo π Estimation — Working Draft"
+        },
+        {
+          "id": "c87a8254-08cb-4a1f-95b7-000d1bd3c96b",
+          "kind": "text",
+          "title": "Monte Carlo Estimation of π — Final Report"
+        },
+        {
+          "id": "1edff44b-888d-49a9-81ee-9280bfb532cf",
+          "kind": "text",
+          "title": "Monte Carlo Pi Estimation — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=1 text doc"
+          },
+          {
+            "id": "has-python-fence",
+            "passed": true,
+            "detail": "expected fenced python code block"
+          },
+          {
+            "id": "has-results-table",
+            "passed": true,
+            "detail": "expected numeric results in a markdown table"
+          }
+        ]
+      }
+    },
+    {
+      "id": "study-kit-multi",
+      "title": "Photosynthesis study kit",
+      "status": "pass",
+      "jobId": "b6b52160-a362-49ba-a65f-30d83a5671d1",
+      "documentCount": 5,
+      "documents": [
+        {
+          "id": "dccef776-9c65-49ed-b150-2e9cecc90d10",
+          "kind": "text",
+          "title": "Unified Content Blueprint: Photosynthesis Study Kit"
+        },
+        {
+          "id": "da986abc-c124-4873-9b4a-16bc26f5f9cc",
+          "kind": "text",
+          "title": "Photosynthesis Study Guide — Exam Cram Edition"
+        },
+        {
+          "id": "5f367225-bc8c-4530-971c-d37a38d293e9",
+          "kind": "text",
+          "title": "Photosynthesis Flashcards — Active Recall Deck"
+        },
+        {
+          "id": "9d3e7fa8-e411-4071-b21b-c151ad30db80",
+          "kind": "text",
+          "title": "Photosynthesis Quiz — 10 Exam-Style Questions with Answer Key"
+        },
+        {
+          "id": "2ed42225-44f7-4eca-a6a7-81ffecc12f5c",
+          "kind": "text",
+          "title": "Photosynthesis Exam Study Kit — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=3 text docs (guide + flashcards + quiz), got 5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "budget-spreadsheet-style",
+      "title": "Europe trip budget planner",
+      "status": "pass",
+      "jobId": "ea534a6f-1664-41f9-9648-bf9ef2db2fa8",
+      "documentCount": 3,
+      "documents": [
+        {
+          "id": "450370ac-8779-4d1b-952a-7b8ed81d0ca3",
+          "kind": "chart",
+          "title": "Paris + Amsterdam Budget Breakdown by Category"
+        },
+        {
+          "id": "cb8ed993-7e75-4690-96c1-b245d25a746d",
+          "kind": "text",
+          "title": "7-Day Paris + Amsterdam Solo Trip Budget Planner"
+        },
+        {
+          "id": "f6fdffe0-3f44-402a-9f29-8df3e9a9705c",
+          "kind": "text",
+          "title": "7-Day Paris Amsterdam Budget Planner — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=1 text doc"
+          },
+          {
+            "id": "has-budget-table",
+            "passed": true,
+            "detail": "expected budget markdown table"
+          },
+          {
+            "id": "has-currency-or-numbers",
+            "passed": true,
+            "detail": "expected formatted currency or large numbers"
+          }
+        ]
+      }
+    },
+    {
+      "id": "visual-travel-guide",
+      "title": "Kyoto travel guide",
+      "status": "pass",
+      "jobId": "78af996b-c825-4a2c-ba59-f9d962c22ee2",
+      "documentCount": 2,
+      "documents": [
+        {
+          "id": "b3c77743-97f9-4455-991b-a9f6279a9f2c",
+          "kind": "text",
+          "title": "Kyoto Visual Landmark Catalog"
+        },
+        {
+          "id": "f0be5421-3e46-4858-85e4-1eff585cc4d2",
+          "kind": "text",
+          "title": "Polished Kyoto 3-Day Travel Guide — Overview"
+        }
+      ],
+      "validation": {
+        "passed": true,
+        "checks": [
+          {
+            "id": "min-text-docs",
+            "passed": true,
+            "detail": "expected >=1 text doc, got 2"
+          },
+          {
+            "id": "has-stock-images",
+            "passed": true,
+            "detail": "expected stockImages in text payload when PEXELS_API_KEY is configured"
+          }
+        ]
+      }
+    }
+  ]
+}
