@@ -47,6 +47,8 @@ export function EcosystemSheet({ open, onOpenChange }: EcosystemSheetProps) {
             <a
               key={worker.url}
               href={worker.url}
+              target="_blank"
+              rel="noopener noreferrer"
               className={cn(
                 'group flex min-h-13 w-full items-center gap-3 rounded-2xl border border-transparent px-2.5 py-2',
                 'bg-muted/50 transition-[background-color,border-color,transform] duration-200',
