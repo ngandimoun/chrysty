@@ -4,6 +4,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Eye, EyeOff, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { ClickyCursorAgent } from '@/components/astra/live-guide/clicky-cursor-agent';
+import { pickPrimaryDirective } from '@/components/astra/live-guide/pick-primary-directive';
+import { PointingBubble } from '@/components/astra/live-guide/pointing-bubble';
 import type { LiveGuideDirective } from '@/lib/gemini/voice-response-schema';
 import type { TrackedAnchor } from '@/lib/camera/anchor-tracker';
 import { cn } from '@/lib/utils';
@@ -29,6 +32,9 @@ export interface ChrystyCursorOverlayProps {
   /** True when the selfie camera preview is CSS-mirrored. */
   mirrored: boolean;
   coachingNote?: string | null;
+  spokenText?: string | null;
+  bootstrapBusy?: boolean;
+  isSpeaking?: boolean;
   watchMeEnabled: boolean;
   watchMeBusy?: boolean;
   onToggleWatchMe: () => void;
@@ -147,6 +153,9 @@ export function ChrystyCursorOverlay({
   contentDimensions,
   mirrored,
   coachingNote,
+  spokenText,
+  bootstrapBusy = false,
+  isSpeaking = false,
   watchMeEnabled,
   watchMeBusy = false,
   onToggleWatchMe,
@@ -154,6 +163,13 @@ export function ChrystyCursorOverlay({
 }: ChrystyCursorOverlayProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerSize, setContainerSize] = useState<Size | null>(null);
+  const [bubbleReady, setBubbleReady] = useState(false);
+
+  const primaryDirective = useMemo(() => pickPrimaryDirective(directives), [directives]);
+
+  useEffect(() => {
+    setBubbleReady(false);
+  }, [primaryDirective?.id, spokenText]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -179,16 +195,48 @@ export function ChrystyCursorOverlay({
       return [];
     }
 
-    return directives.map((directive) => {
-      const track = tracking[directive.id];
-      const offset = track ? { dx: track.dx, dy: track.dy } : { dx: 0, dy: 0 };
-      const dimmed = Boolean(track && track.confidence < LOW_CONFIDENCE);
-      const points = directive.points.map((point) =>
-        projectPoint(point, containerSize, contentDimensions, mirrored, offset),
-      );
-      return { directive, points, dimmed };
-    });
-  }, [containerSize, contentDimensions, directives, mirrored, tracking]);
+    return directives
+      .filter((directive) => directive.id !== primaryDirective?.id)
+      .map((directive) => {
+        const track = tracking[directive.id];
+        const offset = track ? { dx: track.dx, dy: track.dy } : { dx: 0, dy: 0 };
+        const dimmed = Boolean(track && track.confidence < LOW_CONFIDENCE);
+        const points = directive.points.map((point) =>
+          projectPoint(point, containerSize, contentDimensions, mirrored, offset),
+        );
+        return { directive, points, dimmed };
+      });
+  }, [containerSize, contentDimensions, directives, mirrored, primaryDirective?.id, tracking]);
+
+  const primaryRender = useMemo(() => {
+    if (!containerSize || !contentDimensions || !primaryDirective) return null;
+    const track = tracking[primaryDirective.id];
+    const offset = track ? { dx: track.dx, dy: track.dy } : { dx: 0, dy: 0 };
+    const points = primaryDirective.points.map((point) =>
+      projectPoint(point, containerSize, contentDimensions, mirrored, offset),
+    );
+    return {
+      directive: primaryDirective,
+      points,
+      anchor: points[0],
+      dimmed: Boolean(track && track.confidence < LOW_CONFIDENCE),
+    };
+  }, [containerSize, contentDimensions, mirrored, primaryDirective, tracking]);
+
+  const svgShapes = useMemo(() => {
+    const items = [...rendered];
+    if (
+      primaryRender &&
+      primaryRender.directive.kind !== 'pointer'
+    ) {
+      items.unshift({
+        directive: primaryRender.directive,
+        points: primaryRender.points,
+        dimmed: primaryRender.dimmed,
+      });
+    }
+    return items;
+  }, [primaryRender, rendered]);
 
   return (
     <div ref={containerRef} className="pointer-events-none absolute inset-0 z-20" aria-hidden={false}>
@@ -199,7 +247,17 @@ export function ChrystyCursorOverlay({
           role="presentation"
         >
           <AnimatePresence>
-            {rendered.map(({ directive, points, dimmed }) => {
+            {primaryRender && primaryRender.directive.kind === 'pointer' && containerSize ? (
+              <ClickyCursorAgent
+                key={`agent-${primaryRender.directive.id}`}
+                target={primaryRender.anchor}
+                container={containerSize}
+                stroke={emphasisColors(primaryRender.directive.emphasis).stroke}
+                glow={emphasisColors(primaryRender.directive.emphasis).glow}
+                onLanded={() => setBubbleReady(true)}
+              />
+            ) : null}
+            {svgShapes.map(({ directive, points, dimmed }) => {
               const colors = emphasisColors(directive.emphasis);
               const opacity = dimmed ? 0.55 : 1;
 
@@ -358,6 +416,20 @@ export function ChrystyCursorOverlay({
         </svg>
       ) : null}
 
+      {containerSize && primaryRender && primaryRender.anchor && (bubbleReady || primaryRender.directive.kind !== 'pointer' || spokenText) ? (
+        <PointingBubble
+          key={`${primaryRender.directive.id}-${spokenText ?? ''}-${isSpeaking}`}
+          anchor={primaryRender.anchor}
+          label={primaryRender.directive.label}
+          detail={primaryRender.directive.detail}
+          spokenText={spokenText}
+          sequence={primaryRender.directive.sequence}
+          stroke={emphasisColors(primaryRender.directive.emphasis).stroke}
+          containerWidth={containerSize.width}
+          isSpeaking={isSpeaking}
+        />
+      ) : null}
+
       {containerSize
         ? rendered.map(({ directive, points, dimmed }) => {
             const colors = emphasisColors(directive.emphasis);
@@ -391,6 +463,16 @@ export function ChrystyCursorOverlay({
             >
               {coachingNote}
             </motion.p>
+          ) : bootstrapBusy ? (
+            <motion.p
+              key="live-guide-bootstrap"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="pointer-events-none max-w-[min(92%,20rem)] text-center text-xs font-medium leading-snug text-cyan-100/90"
+            >
+              Opening camera and getting ready…
+            </motion.p>
           ) : directives.length === 0 ? (
             <motion.p
               key="live-guide-hint"
@@ -399,7 +481,7 @@ export function ChrystyCursorOverlay({
               exit={{ opacity: 0, y: -8 }}
               className="pointer-events-none max-w-[min(92%,20rem)] text-center text-xs font-medium leading-snug text-cyan-100/90"
             >
-              Live Guide on — speak or point your camera at what you need help with
+              Keep talking or move the camera toward what you need help with
             </motion.p>
           ) : null}
         </AnimatePresence>
@@ -412,6 +494,9 @@ export function ChrystyCursorOverlay({
             <span className="relative inline-flex size-1.5 rounded-full bg-cyan-300" />
           </span>
           Live guide
+          {bootstrapBusy ? (
+            <span className="size-1.5 animate-pulse rounded-full bg-cyan-200" aria-hidden />
+          ) : null}
         </span>
 
         <button

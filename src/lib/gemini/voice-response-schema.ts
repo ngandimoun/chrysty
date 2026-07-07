@@ -36,7 +36,7 @@ export interface VoiceResponsePayload {
 /**
  * Semantic, model-decided hint about how guidance should be delivered.
  * - `static`: normal turn; annotated stills / explanation canvas are enough.
- * - `live_recommended`: real-time on-camera guidance would help; UI offers it.
+ * - `live_recommended`: real-time on-camera guidance would help; app auto-enters Live Guide.
  * - `live_requested`: the user explicitly asked (any language/phrasing) for
  *   step-by-step live help; UI enters Live Guide directly.
  */

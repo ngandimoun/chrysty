@@ -64,6 +64,7 @@ interface UseVoiceAgentOptions {
   /** Compact previous Live Guide state forwarded to the model for continuity. */
   getLiveGuideContext?: () => string | null;
   onLiveGuide?: (update: LiveGuideUpdate) => void;
+  onLiveGuideSpeech?: (text: string) => void;
 }
 
 interface RecordingResult {
@@ -89,6 +90,7 @@ interface UseVoiceAgentResult {
   toggleRecording: () => Promise<RecordingResult>;
   cancelRecording: () => Promise<void>;
   sendMonitorTurn: (capture: VisualCapture | null) => Promise<RecordingResult>;
+  sendBootstrapTurn: (capture: VisualCapture | null) => Promise<RecordingResult>;
   stopSpeaking: () => void;
   replayLastResponseAudio: () => Promise<void>;
   dismissExplanation: () => void;
@@ -111,6 +113,7 @@ export function useVoiceAgent({
   getRequestMode,
   getLiveGuideContext,
   onLiveGuide,
+  onLiveGuideSpeech,
 }: UseVoiceAgentOptions): UseVoiceAgentResult {
   const [state, setState] = useState<AgentState>('idle');
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -134,6 +137,7 @@ export function useVoiceAgent({
   const getRequestModeRef = useRef(getRequestMode);
   const getLiveGuideContextRef = useRef(getLiveGuideContext);
   const onLiveGuideRef = useRef(onLiveGuide);
+  const onLiveGuideSpeechRef = useRef(onLiveGuideSpeech);
   const monitorAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -145,12 +149,14 @@ export function useVoiceAgent({
     getRequestModeRef.current = getRequestMode;
     getLiveGuideContextRef.current = getLiveGuideContext;
     onLiveGuideRef.current = onLiveGuide;
+    onLiveGuideSpeechRef.current = onLiveGuideSpeech;
   }, [
     getLiveGuideContext,
     getRequestMode,
     getStream,
     getVisualCapture,
     onLiveGuide,
+    onLiveGuideSpeech,
     onRecordingStart,
     onSpeakingEnd,
     onSpeakingStart,
@@ -412,6 +418,9 @@ export function useVoiceAgent({
       }
 
       const spokenFallback = streamResult.done.spokenTranscript?.trim();
+      if (spokenFallback) {
+        onLiveGuideSpeechRef.current?.(spokenFallback);
+      }
       if (ttsErrorRef.current && pcmChunks.length === 0 && spokenFallback) {
         setExplanation((current) =>
           current.active
@@ -482,13 +491,15 @@ export function useVoiceAgent({
     }
   }, [clearExplanationImages, getPlayer, stopSpeaking]);
 
-  const sendMonitorTurn = useCallback(
-    async (capture: VisualCapture | null): Promise<RecordingResult> => {
+  const sendLiveGuideFrameTurn = useCallback(
+    async (
+      capture: VisualCapture | null,
+      mode: 'live_guide_monitor' | 'live_guide_bootstrap',
+    ): Promise<RecordingResult> => {
       if (!capture) {
         return { ok: false, error: 'No camera frame available.' };
       }
 
-      // Never interleave silent monitoring with an active user turn.
       if (recorderRef.current?.isRecording() || monitorAbortRef.current) {
         return { ok: false };
       }
@@ -498,7 +509,7 @@ export function useVoiceAgent({
 
       try {
         const formData = new FormData();
-        formData.append('mode', 'live_guide_monitor');
+        formData.append('mode', mode);
         const liveGuideContext = getLiveGuideContextRef.current?.();
         if (liveGuideContext) {
           formData.append('liveGuideContext', liveGuideContext);
@@ -541,16 +552,21 @@ export function useVoiceAgent({
           return { ok: false, error: streamResult.error };
         }
 
+        const spoken = streamResult.done?.spokenTranscript?.trim();
+        if (spoken) {
+          onLiveGuideSpeechRef.current?.(spoken);
+        }
+
         await Promise.all(pendingEnqueues);
         await player.flush();
         return { ok: true };
-      } catch (monitorError) {
+      } catch (frameTurnError) {
         if (abort.signal.aborted) {
           return { ok: false };
         }
         return {
           ok: false,
-          error: monitorError instanceof Error ? monitorError.message : 'Monitoring turn failed.',
+          error: frameTurnError instanceof Error ? frameTurnError.message : 'Live Guide turn failed.',
         };
       } finally {
         if (monitorAbortRef.current === abort) {
@@ -559,6 +575,20 @@ export function useVoiceAgent({
       }
     },
     [getPlayer],
+  );
+
+  const sendMonitorTurn = useCallback(
+    async (capture: VisualCapture | null): Promise<RecordingResult> => {
+      return sendLiveGuideFrameTurn(capture, 'live_guide_monitor');
+    },
+    [sendLiveGuideFrameTurn],
+  );
+
+  const sendBootstrapTurn = useCallback(
+    async (capture: VisualCapture | null): Promise<RecordingResult> => {
+      return sendLiveGuideFrameTurn(capture, 'live_guide_bootstrap');
+    },
+    [sendLiveGuideFrameTurn],
   );
 
   const startRecording = useCallback(async (): Promise<RecordingResult> => {
@@ -684,6 +714,7 @@ export function useVoiceAgent({
     toggleRecording,
     cancelRecording,
     sendMonitorTurn,
+    sendBootstrapTurn,
     stopSpeaking,
     replayLastResponseAudio,
     dismissExplanation: clearExplanation,

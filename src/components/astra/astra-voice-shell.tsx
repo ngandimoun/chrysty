@@ -80,6 +80,9 @@ export function AstraVoiceShell() {
   const monitorSenderRef = useRef<
     (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>
   >(async () => ({ ok: false }));
+  const bootstrapSenderRef = useRef<
+    (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>
+  >(async () => ({ ok: false }));
   const agentBusyRef = useRef(false);
   const liveFocusAnnotationsRef = useRef<FocusAnnotation[]>([]);
   const cameraFacingRef = useRef<'environment' | 'user'>('environment');
@@ -137,6 +140,7 @@ export function AstraVoiceShell() {
     cameraActive,
     openCamera,
     sendMonitorTurn: (capture) => monitorSenderRef.current(capture),
+    sendBootstrapTurn: (capture) => bootstrapSenderRef.current(capture),
     isAgentBusy: () => agentBusyRef.current,
   });
 
@@ -258,7 +262,6 @@ export function AstraVoiceShell() {
     active: liveGuideActive,
     noteSentFrame: noteLiveGuideFrame,
     exit: exitLiveGuide,
-    enter: enterLiveGuide,
   } = liveGuide;
 
   const getVisualCaptureWithLiveGuide = useCallback(async (): Promise<VisualCapture[]> => {
@@ -354,6 +357,7 @@ export function AstraVoiceShell() {
     toggleRecording,
     cancelRecording,
     sendMonitorTurn,
+    sendBootstrapTurn,
     stopSpeaking,
     replayLastResponseAudio,
     dismissExplanation,
@@ -370,11 +374,16 @@ export function AstraVoiceShell() {
     getRequestMode: liveGuide.getRequestMode,
     getLiveGuideContext: liveGuide.getLiveGuideContext,
     onLiveGuide: liveGuide.handleLiveGuideUpdate,
+    onLiveGuideSpeech: liveGuide.noteSpokenText,
   });
 
   useEffect(() => {
     monitorSenderRef.current = sendMonitorTurn;
   }, [sendMonitorTurn]);
+
+  useEffect(() => {
+    bootstrapSenderRef.current = sendBootstrapTurn;
+  }, [sendBootstrapTurn]);
 
   useEffect(() => {
     agentBusyRef.current = agentState !== 'idle' || isSpeaking;
@@ -938,6 +947,9 @@ export function AstraVoiceShell() {
               contentDimensions={cursorContentDimensions}
               mirrored={cameraFacing === 'user'}
               coachingNote={liveGuide.coachingNote}
+              spokenText={liveGuide.spokenText}
+              bootstrapBusy={liveGuide.bootstrapBusy}
+              isSpeaking={isSpeaking}
               watchMeEnabled={liveGuide.watchMeEnabled}
               watchMeBusy={liveGuide.watchMeBusy}
               onToggleWatchMe={liveGuide.toggleWatchMe}
@@ -945,25 +957,6 @@ export function AstraVoiceShell() {
             />
           }
         />
-        <AnimatePresence>
-          {liveGuide.offerAvailable && !liveGuideActive ? (
-            <motion.button
-              key="live-guide-chip"
-              type="button"
-              initial={{ opacity: 0, y: 8, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.96 }}
-              onClick={() => void enterLiveGuide()}
-              className="inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-[0_0_28px_rgba(31,213,249,0.2)] backdrop-blur-sm transition-colors hover:bg-cyan-400/20"
-            >
-              <span className="relative flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-cyan-300 opacity-75" />
-                <span className="relative inline-flex size-2 rounded-full bg-cyan-300" />
-              </span>
-              Guide me live
-            </motion.button>
-          ) : null}
-        </AnimatePresence>
         <PhotoStrip
           photos={photoStripItems}
           onSelect={setSelectedAnnotationPhotoId}

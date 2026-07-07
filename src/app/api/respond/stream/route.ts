@@ -18,6 +18,7 @@ import { getGeminiApiKey } from '@/lib/gemini/config';
 import {
   buildVoiceResponseFromMultimodal,
   type DelegationPromptContext,
+  LIVE_GUIDE_BOOTSTRAP_TRANSCRIPT,
   type LiveGuideTurnOptions,
 } from '@/lib/gemini/response-prompt';
 import { formatUserFacingGeminiError } from '@/lib/gemini/user-facing-error';
@@ -197,10 +198,14 @@ function parseCaptureMode(raw: unknown, fallback: CaptureMode): CaptureMode {
     : fallback;
 }
 
-type RequestMode = 'default' | 'live_guide' | 'live_guide_monitor';
+type RequestMode = 'default' | 'live_guide' | 'live_guide_monitor' | 'live_guide_bootstrap';
 
 function parseRequestMode(raw: unknown): RequestMode {
-  return raw === 'live_guide' || raw === 'live_guide_monitor' ? raw : 'default';
+  return raw === 'live_guide' ||
+    raw === 'live_guide_monitor' ||
+    raw === 'live_guide_bootstrap'
+    ? raw
+    : 'default';
 }
 
 const MAX_LIVE_GUIDE_CONTEXT_CHARS = 600;
@@ -438,25 +443,33 @@ export async function POST(request: Request) {
     const audioDurationMs = Number(formData.get('audioDurationMs') ?? 0);
     const requestMode = parseRequestMode(formData.get('mode'));
     const isMonitorTurn = requestMode === 'live_guide_monitor';
+    const isBootstrapTurn = requestMode === 'live_guide_bootstrap';
+    const isFrameOnlyTurn = isMonitorTurn || isBootstrapTurn;
     const liveGuideOptions: LiveGuideTurnOptions | undefined =
       requestMode === 'default'
         ? undefined
         : {
             active: true,
             ...(isMonitorTurn ? { monitor: true } : {}),
+            ...(isBootstrapTurn
+              ? {
+                  bootstrap: true,
+                  transcriptOverride: LIVE_GUIDE_BOOTSTRAP_TRANSCRIPT,
+                }
+              : {}),
             ...(parseLiveGuideContext(formData.get('liveGuideContext'))
               ? { context: parseLiveGuideContext(formData.get('liveGuideContext')) }
               : {}),
           };
 
-    if (!(audio instanceof File) && !isMonitorTurn) {
+    if (!(audio instanceof File) && !isFrameOnlyTurn) {
       return new Response(encodeSseEvent('error', { message: 'Missing audio file.' }), {
         status: 400,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
       });
     }
 
-    if (audio instanceof File && audio.size === 0 && !isMonitorTurn) {
+    if (audio instanceof File && audio.size === 0 && !isFrameOnlyTurn) {
       return new Response(encodeSseEvent('error', { message: 'Audio file is empty.' }), {
         status: 400,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
@@ -472,8 +485,8 @@ export async function POST(request: Request) {
 
     const images = await parseImageInputs(formData);
 
-    if (isMonitorTurn && images.length === 0) {
-      return new Response(encodeSseEvent('error', { message: 'Monitoring turns require a camera frame.' }), {
+    if (isFrameOnlyTurn && images.length === 0) {
+      return new Response(encodeSseEvent('error', { message: 'Live Guide frame turns require a camera image.' }), {
         status: 400,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
       });

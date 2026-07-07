@@ -116,14 +116,19 @@ export interface LiveGuideTurnOptions {
   active: boolean;
   /** True for automatic silent monitoring turns ("Watch me"), not user questions. */
   monitor?: boolean;
+  /** True for the one-shot greeting turn when Live Guide auto-starts. */
+  bootstrap?: boolean;
   /** When set, STT is skipped and this text is used as the turn transcript. */
   transcriptOverride?: string;
   /** Compact client-provided summary of the previous guide state for continuity. */
   context?: string;
 }
 
-const LIVE_GUIDE_MONITOR_TRANSCRIPT =
+export const LIVE_GUIDE_MONITOR_TRANSCRIPT =
   'Automatic Live Guide monitoring check. Look at the current camera frame and decide whether the user needs a correction, warning, or updated guidance right now.';
+
+export const LIVE_GUIDE_BOOTSTRAP_TRANSCRIPT =
+  'The user just entered Live Guide on their live camera. Greet them briefly in their language, ask what they want help with or what to point at, and set live_guide.task to a welcoming stage. Do not require directives unless the scene is obvious; prefer coaching_note over guessing coordinates.';
 
 function buildTranscriptMultimodalCue(
   transcript: string,
@@ -200,6 +205,11 @@ function buildTranscriptMultimodalCue(
     );
     if (options.liveGuide.context) {
       attachmentLines.push(`Previous Live Guide state: ${options.liveGuide.context}`);
+    }
+    if (options.liveGuide.bootstrap) {
+      attachmentLines.push(
+        'This is the automatic Live Guide entry turn. Speak a short welcoming greeting and ask what the user wants help with. live_guide is required; directives may be empty if the scene is unclear. Set coaching_note to invite them to point the camera at the task.',
+      );
     }
     if (options.liveGuide.monitor) {
       attachmentLines.push(
@@ -303,7 +313,7 @@ Given the user's transcript (and optionally attached visual material from their 
 - visual_image_groups (array, optional): grouped Pexels photo search requests only for consumer explanations where real-world reference photos are necessary. Each group has id, title, intent (ingredient|tool|step|part|place|safety|example), layout (single|grid|sequence|comparison), queries (1-6 concrete Pexels search strings), optional placement, and optional maxItems. Use [] or omit when photos are not clearly useful.
 - guidance_mode (string): how guidance should be delivered this turn. This is a semantic decision from the meaning of the user's request in ANY language — never keyword matching:
   - "static" (default): a spoken answer, explanation canvas, or annotated stills are enough (identification, reading, facts, comparisons).
-  - "live_recommended": the user is performing or about to perform a physical action where step-by-step real-time on-camera pointing would clearly help (aiming a shot, assembling parts in order, adjusting position/technique, following a physical sequence). The app will offer the user a live guidance option.
+  - "live_recommended": the user is performing or about to perform a physical action where step-by-step real-time on-camera pointing would clearly help (aiming a shot, assembling parts in order, adjusting position/technique, following a physical sequence). The app enters live guidance directly and opens the camera.
   - "live_requested": the user explicitly asked, in their own words and language, to be guided while they do it / shown live / walked through in real time. The app enters live guidance directly.
 - live_guide (object, optional): ONLY return this when the current turn runs in Live Guide mode (the user prompt will say so). It drives an animated Chrysty cursor on the user's LIVE camera view:
   - directives: up to 8 (prefer 1-4) of { id, kind, points, label, detail, emphasis, sequence }.
@@ -390,15 +400,22 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
   const blocks = [base];
 
   if (liveGuide?.active) {
+    const bootstrapRules = liveGuide.bootstrap
+      ? `
+- Bootstrap entry turn: spoken_transcript MUST greet and ask what to help with (e.g. what to point at). live_guide.directives may be empty. Set live_guide.task with a welcoming stage. coaching_note should invite pointing the camera at the task. needs_visual_explanation=false.`
+      : '';
+    const monitorRules = liveGuide.monitor
+      ? `
+- For monitoring turns, respond with interjection.should_speak=false and an empty spoken_transcript unless intervention genuinely helps.`
+      : '';
     blocks.push(`Live Guide mode rules (active this turn):
 - You are guiding the user in real time on their live camera with voice plus an on-screen Chrysty cursor. Stay domain-free: infer the actual task (any sport, repair, kitchen, DIY, or other physical work) from the user and the frame.
 - The attached camera frame is the CURRENT state of the scene. Base every directive on what is visible in it right now, and continue from what the user already did.
 - live_guide is REQUIRED every Live Guide turn. When giving spatial guidance, return at least one pointer directive with reliable points on the frame. If the angle is too unclear, set coaching_note asking for a better angle — do not omit live_guide or return empty directives without explanation.
 - spoken_transcript narrates only the current action: what to do, where (referencing pointer/path by step number), and one check or reason. Say "number 1" / "step 2" when sequence is set on directives (match user language). Keep it natural and short; the cursor shows the "where".
-- Return few, reliable directives. One pointer plus at most one path/region beats five uncertain marks. Set sequence (1, 2, 3…) on directives for multi-step actions.
+- Return few, reliable directives. Prefer one primary pointer per turn; set directive.detail to one short bubble line. Set sequence (1, 2, 3…) on directives for multi-step actions.
 - Always update live_guide.task (name, stage, progress) so the session stays coherent across turns.
-- Set needs_visual_explanation=false in Live Guide mode unless the user explicitly asks for something to read; the camera view is the workspace.
-- For monitoring turns, respond with interjection.should_speak=false and an empty spoken_transcript unless intervention genuinely helps.`);
+- Set needs_visual_explanation=false in Live Guide mode unless the user explicitly asks for something to read; the camera view is the workspace.${bootstrapRules}${monitorRules}`);
   }
 
   if (userContext) {
@@ -1106,7 +1123,9 @@ export async function buildVoiceResponseFromMultimodal(
   llmMs: number;
   grounding: ToolGroundingResult;
 }> {
-  const useTranscriptOverride = Boolean(liveGuide?.transcriptOverride?.trim() || liveGuide?.monitor);
+  const useTranscriptOverride = Boolean(
+    liveGuide?.transcriptOverride?.trim() || liveGuide?.monitor || liveGuide?.bootstrap,
+  );
 
   if (!useTranscriptOverride) {
     const normalizedMimeType = normalizeAudioMimeType(mimeType);
@@ -1137,7 +1156,9 @@ export async function buildVoiceResponseFromMultimodal(
   let sttMs = 0;
 
   if (useTranscriptOverride) {
-    transcript = liveGuide?.transcriptOverride?.trim() || LIVE_GUIDE_MONITOR_TRANSCRIPT;
+    transcript =
+      liveGuide?.transcriptOverride?.trim() ||
+      (liveGuide?.bootstrap ? LIVE_GUIDE_BOOTSTRAP_TRANSCRIPT : LIVE_GUIDE_MONITOR_TRANSCRIPT);
   } else {
     const normalizedMimeType = normalizeAudioMimeType(mimeType);
     const { bytes: preparedAudioBytes, mimeType: interactionMimeType } = sanitizeInteractionAudio(
@@ -1160,15 +1181,16 @@ export async function buildVoiceResponseFromMultimodal(
     userContext,
   };
   const isMonitorTurn = Boolean(liveGuide?.monitor);
+  const isFrameOnlyTurn = Boolean(liveGuide?.monitor || liveGuide?.bootstrap);
 
   const [{ selection, routeMs }, memories, recentTurns] = await Promise.all([
-    isMonitorTurn
+    isFrameOnlyTurn
       ? Promise.resolve({ selection: EMPTY_TOOL_SELECTION, routeMs: 0 })
       : routeVoiceTools(client, transcript, routeContext),
-    memoryContext && !isMonitorTurn
+    memoryContext && !isFrameOnlyTurn
       ? searchUserMemories(memoryContext.memoryUserId, transcript)
       : Promise.resolve([]),
-    memoryContext && !isMonitorTurn
+    memoryContext && !isFrameOnlyTurn
       ? fetchRecentTurns({
           workspaceId: memoryContext.workspaceId,
           astraKey: memoryContext.astraKey,
