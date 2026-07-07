@@ -1,7 +1,7 @@
 import type { ResponseTimings } from '@/lib/gemini/config';
 import type { StreamingAudioChunk } from '@/lib/audio/streaming-player';
 import type { ChartSpec, CodeExecutionImage } from '@/lib/charts/types';
-import { parseVisualGuidance } from '@/lib/gemini/voice-response-schema';
+import { parseGuidanceMode, parseLiveGuide, parseVisualGuidance } from '@/lib/gemini/voice-response-schema';
 import type {
   PhysicalEvidenceItem,
   PhysicalNextAction,
@@ -10,7 +10,7 @@ import type {
   PhysicalTaskState,
   PhysicalVisualAnnotation,
 } from '@/lib/gemini/voice-response-schema';
-import type { ExplanationVisuals, PlaceCard, WebCitation } from '@/lib/streaming/types';
+import type { ExplanationVisuals, LiveGuideUpdate, PlaceCard, WebCitation } from '@/lib/streaming/types';
 import { parseStockImageGroups } from '@/lib/visuals/stock-images';
 
 export interface ResponseStreamDone {
@@ -23,6 +23,7 @@ export interface ResponseStreamCallbacks {
   onExplanationStart?: (visuals: ExplanationVisuals) => void;
   onExplanationDelta?: (text: string) => void;
   onExplanationDone?: (text: string, visuals: ExplanationVisuals) => void;
+  onLiveGuide?: (update: LiveGuideUpdate) => void;
   onTtsError?: (message: string) => void;
 }
 
@@ -313,7 +314,8 @@ export async function consumeResponseStream(
   response: Response,
   callbacks: ResponseStreamCallbacks,
 ): Promise<{ done: ResponseStreamDone | null; error: string | null }> {
-  const { onAudio, onExplanationStart, onExplanationDelta, onExplanationDone, onTtsError } = callbacks;
+  const { onAudio, onExplanationStart, onExplanationDelta, onExplanationDone, onLiveGuide, onTtsError } =
+    callbacks;
 
   if (!response.ok) {
     const contentType = response.headers.get('content-type') ?? '';
@@ -355,6 +357,12 @@ export async function consumeResponseStream(
             onExplanationDelta?.(payload.text);
           } else if (parsed.event === 'explanation_done' && typeof payload.text === 'string') {
             onExplanationDone?.(payload.text, parseVisuals(payload));
+          } else if (parsed.event === 'live_guide') {
+            onLiveGuide?.({
+              liveGuide: parseLiveGuide(payload.liveGuide),
+              guidanceMode: parseGuidanceMode(payload.guidanceMode),
+              monitor: payload.monitor === true,
+            });
           } else if (parsed.event === 'audio' && typeof payload.data === 'string') {
             void onAudio({
               data: payload.data,

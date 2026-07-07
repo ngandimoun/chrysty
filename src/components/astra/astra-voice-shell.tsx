@@ -8,6 +8,7 @@ import type { LocalAudioTrack } from 'livekit-client';
 import { AudioErrorBanner } from '@/components/astra/audio-error-banner';
 import { BackgroundJobsPill } from '@/components/astra/background-jobs-pill';
 import { BackgroundJobsSheet } from '@/components/astra/background-jobs-sheet';
+import { ChrystyCursorOverlay } from '@/components/astra/chrysty-cursor-overlay';
 import { ConnectedUserBadge } from '@/components/auth/connected-user-badge';
 import { DocumentsSheet } from '@/components/astra/documents-sheet';
 import { ListeningAmbientBackground } from '@/components/astra/listening-ambient-background';
@@ -19,6 +20,7 @@ import { VoiceControls } from '@/components/astra/voice-controls';
 import { useBackgroundJobs } from '@/hooks/use-background-jobs';
 import { useCamera } from '@/hooks/use-camera';
 import { useGeneratedDocuments } from '@/hooks/use-generated-documents';
+import { useLiveGuide } from '@/hooks/use-live-guide';
 import { useVoiceAgent, type VisualCapture } from '@/hooks/use-voice-agent';
 import type { AppAgentPhase } from '@/lib/agent-state';
 import {
@@ -66,9 +68,16 @@ export function AstraVoiceShell() {
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isSavingExplanation, setIsSavingExplanation] = useState(false);
+  const [cameraContentDims, setCameraContentDims] = useState<{ width: number; height: number } | null>(
+    null,
+  );
 
   const audioTrackRef = useRef<LocalAudioTrack | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const monitorSenderRef = useRef<
+    (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>
+  >(async () => ({ ok: false }));
+  const agentBusyRef = useRef(false);
   const liveFocusAnnotationsRef = useRef<FocusAnnotation[]>([]);
   const cameraFacingRef = useRef<'environment' | 'user'>('environment');
   const photoUrlsRef = useRef<Map<string, { url: string; source: Blob }>>(new Map());
@@ -117,6 +126,16 @@ export function AstraVoiceShell() {
     cancelFrameSampling,
     consumePendingPhotos,
   } = useCamera();
+
+  const getCameraVideo = useCallback(() => cameraVideoRef.current, []);
+
+  const liveGuide = useLiveGuide({
+    getVideo: getCameraVideo,
+    cameraActive,
+    openCamera,
+    sendMonitorTurn: (capture) => monitorSenderRef.current(capture),
+    isAgentBusy: () => agentBusyRef.current,
+  });
 
   useEffect(() => {
     liveFocusAnnotationsRef.current = liveFocusAnnotations;
@@ -233,6 +252,23 @@ export function AstraVoiceShell() {
   ]);
 
   const {
+    active: liveGuideActive,
+    noteSentFrame: noteLiveGuideFrame,
+    exit: exitLiveGuide,
+    enter: enterLiveGuide,
+  } = liveGuide;
+
+  const getVisualCaptureWithLiveGuide = useCallback(async (): Promise<VisualCapture[]> => {
+    const visuals = await getVisualCapture();
+    if (liveGuideActive && visuals.length > 0) {
+      const first = visuals[0];
+      // The anchor tracker needs the exact frame the model reasoned about.
+      noteLiveGuideFrame({ blob: first.blob, width: first.width, height: first.height });
+    }
+    return visuals;
+  }, [getVisualCapture, liveGuideActive, noteLiveGuideFrame]);
+
+  const {
     documents,
     unreadCount: unreadDocumentCount,
     isLoading: documentsLoading,
@@ -295,12 +331,14 @@ export function AstraVoiceShell() {
 
   const {
     state: agentState,
+    isSpeaking,
     explanation,
     timings,
     playbackBlocked,
     lastResponseAudio,
     toggleRecording,
     cancelRecording,
+    sendMonitorTurn,
     stopSpeaking,
     replayLastResponseAudio,
     dismissExplanation,
@@ -313,8 +351,19 @@ export function AstraVoiceShell() {
     onSpeakingStart: handleSpeakingStart,
     onSpeakingEnd: handleSpeakingEnd,
     onRecordingStart: handleRecordingStart,
-    getVisualCapture,
+    getVisualCapture: getVisualCaptureWithLiveGuide,
+    getRequestMode: liveGuide.getRequestMode,
+    getLiveGuideContext: liveGuide.getLiveGuideContext,
+    onLiveGuide: liveGuide.handleLiveGuideUpdate,
   });
+
+  useEffect(() => {
+    monitorSenderRef.current = sendMonitorTurn;
+  }, [sendMonitorTurn]);
+
+  useEffect(() => {
+    agentBusyRef.current = agentState !== 'idle' || isSpeaking;
+  }, [agentState, isSpeaking]);
 
   const clearError = useCallback(() => {
     setErrorMessage(null);
@@ -352,6 +401,7 @@ export function AstraVoiceShell() {
   }, [teardownMic]);
 
   const handleDisconnect = useCallback(() => {
+    exitLiveGuide();
     teardownMic();
     stopPerception();
     closeCamera();
@@ -371,6 +421,7 @@ export function AstraVoiceShell() {
     clearLiveFocusAnnotations,
     clearPendingPhotos,
     closeCamera,
+    exitLiveGuide,
     resetAgent,
     stopSpeaking,
     stopPerception,
@@ -702,6 +753,11 @@ export function AstraVoiceShell() {
   const handleCameraVideoReady = useCallback(
     (video: HTMLVideoElement) => {
       cameraVideoRef.current = video;
+      setCameraContentDims(
+        video.videoWidth > 0 && video.videoHeight > 0
+          ? { width: video.videoWidth, height: video.videoHeight }
+          : null,
+      );
       if (isPerceptionEnabled()) {
         if (!perceptionManagerRef.current) {
           perceptionManagerRef.current = new PerceptionManager({ profile: 'general' });
@@ -859,7 +915,40 @@ export function AstraVoiceShell() {
           onAspectRatioChange={handleAspectRatioChange}
           onFocusAtPoint={handleFocusAtPoint}
           onFocusAnnotationsChange={handleLiveFocusAnnotationsChange}
+          liveGuideActive={liveGuideActive}
+          liveGuideOverlay={
+            <ChrystyCursorOverlay
+              directives={liveGuide.directives}
+              tracking={liveGuide.tracking}
+              contentDimensions={cameraContentDims}
+              mirrored={cameraFacing === 'user'}
+              coachingNote={liveGuide.coachingNote}
+              watchMeEnabled={liveGuide.watchMeEnabled}
+              watchMeBusy={liveGuide.watchMeBusy}
+              onToggleWatchMe={liveGuide.toggleWatchMe}
+              onExit={exitLiveGuide}
+            />
+          }
         />
+        <AnimatePresence>
+          {liveGuide.offerAvailable && !liveGuideActive ? (
+            <motion.button
+              key="live-guide-chip"
+              type="button"
+              initial={{ opacity: 0, y: 8, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.96 }}
+              onClick={() => void enterLiveGuide()}
+              className="inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-[0_0_28px_rgba(31,213,249,0.2)] backdrop-blur-sm transition-colors hover:bg-cyan-400/20"
+            >
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-cyan-300 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-cyan-300" />
+              </span>
+              Guide me live
+            </motion.button>
+          ) : null}
+        </AnimatePresence>
         <PhotoStrip
           photos={photoStripItems}
           onSelect={setSelectedAnnotationPhotoId}

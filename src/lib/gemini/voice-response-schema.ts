@@ -29,6 +29,51 @@ export interface VoiceResponsePayload {
   visual_image_groups: VisualImageGroupRequest[];
   physical_task?: PhysicalTaskResponse | null;
   visual_guidance?: VisualGuidanceResponse | null;
+  guidance_mode: GuidanceMode;
+  live_guide?: LiveGuideResponse | null;
+}
+
+/**
+ * Semantic, model-decided hint about how guidance should be delivered.
+ * - `static`: normal turn; annotated stills / explanation canvas are enough.
+ * - `live_recommended`: real-time on-camera guidance would help; UI offers it.
+ * - `live_requested`: the user explicitly asked (any language/phrasing) for
+ *   step-by-step live help; UI enters Live Guide directly.
+ */
+export type GuidanceMode = 'static' | 'live_recommended' | 'live_requested';
+
+export type LiveGuideDirectiveKind = 'pointer' | 'path' | 'region' | 'ghost';
+
+export type LiveGuideEmphasis = 'primary' | 'secondary' | 'warning';
+
+export interface LiveGuideDirective {
+  id: string;
+  kind: LiveGuideDirectiveKind;
+  /** Normalized 0-1 coordinates on the reference camera frame (parser converts the model's 0-1000 convention). */
+  points: VisualGuidancePoint[];
+  label?: string;
+  detail?: string;
+  emphasis?: LiveGuideEmphasis;
+  sequence?: number;
+}
+
+export interface LiveGuideInterjection {
+  should_speak: boolean;
+  urgency?: string;
+}
+
+export interface LiveGuideTaskState {
+  name?: string;
+  stage?: string;
+  progress?: string;
+}
+
+export interface LiveGuideResponse {
+  directives: LiveGuideDirective[];
+  clear_previous: boolean;
+  coaching_note?: string;
+  interjection?: LiveGuideInterjection;
+  task?: LiveGuideTaskState;
 }
 
 export interface PhysicalTaskState {
@@ -295,6 +340,54 @@ const VISUAL_GUIDANCE_SCHEMA = {
   },
 } as const;
 
+const LIVE_GUIDE_POINT_SCHEMA = {
+  type: 'object',
+  properties: {
+    x: { type: 'number', minimum: 0, maximum: 1000 },
+    y: { type: 'number', minimum: 0, maximum: 1000 },
+  },
+  required: ['x', 'y'],
+} as const;
+
+const LIVE_GUIDE_DIRECTIVE_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    kind: { type: 'string', enum: ['pointer', 'path', 'region', 'ghost'] },
+    points: { type: 'array', minItems: 1, maxItems: 24, items: LIVE_GUIDE_POINT_SCHEMA },
+    label: { type: 'string' },
+    detail: { type: 'string' },
+    emphasis: { type: 'string', enum: ['primary', 'secondary', 'warning'] },
+    sequence: { type: 'integer', minimum: 0, maximum: 100 },
+  },
+  required: ['kind', 'points'],
+} as const;
+
+const LIVE_GUIDE_SCHEMA = {
+  type: 'object',
+  properties: {
+    directives: { type: 'array', maxItems: 8, items: LIVE_GUIDE_DIRECTIVE_SCHEMA },
+    clear_previous: { type: 'boolean' },
+    coaching_note: { type: 'string' },
+    interjection: {
+      type: 'object',
+      properties: {
+        should_speak: { type: 'boolean' },
+        urgency: { type: 'string' },
+      },
+      required: ['should_speak'],
+    },
+    task: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        stage: { type: 'string' },
+        progress: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
 const PHYSICAL_TASK_SCHEMA = {
   type: 'object',
   properties: {
@@ -317,6 +410,8 @@ export const VOICE_RESPONSE_JSON_SCHEMA = {
     charts: { type: 'array', items: CHART_SCHEMA },
     physical_task: PHYSICAL_TASK_SCHEMA,
     visual_guidance: VISUAL_GUIDANCE_SCHEMA,
+    guidance_mode: { type: 'string', enum: ['static', 'live_recommended', 'live_requested'] },
+    live_guide: LIVE_GUIDE_SCHEMA,
     visual_image_groups: {
       type: 'array',
       maxItems: MAX_STOCK_IMAGE_GROUPS,
@@ -832,6 +927,132 @@ export function parseVisualGuidance(raw: unknown): VisualGuidanceResponse | null
   };
 }
 
+const LIVE_GUIDE_DIRECTIVE_KINDS = new Set<LiveGuideDirectiveKind>([
+  'pointer',
+  'path',
+  'region',
+  'ghost',
+]);
+
+const LIVE_GUIDE_EMPHASES = new Set<LiveGuideEmphasis>(['primary', 'secondary', 'warning']);
+
+/**
+ * Accepts the model's native 0-1000 spatial convention as well as already
+ * normalized 0-1 floats and returns a normalized 0-1 value.
+ */
+function normalizeLiveGuideCoordinate(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  if (value <= 1) {
+    return value;
+  }
+  if (value <= 1000) {
+    return value / 1000;
+  }
+  return undefined;
+}
+
+function parseLiveGuidePoints(raw: unknown): VisualGuidancePoint[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .slice(0, 24)
+    .map((item) => {
+      const record = asRecord(item);
+      if (!record) return null;
+      const x = normalizeLiveGuideCoordinate(record.x);
+      const y = normalizeLiveGuideCoordinate(record.y);
+      return x !== undefined && y !== undefined ? { x, y } : null;
+    })
+    .filter((point): point is VisualGuidancePoint => point !== null);
+}
+
+function parseLiveGuideDirectives(raw: unknown): LiveGuideDirective[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .slice(0, 8)
+    .map((item, index) => {
+      const record = asRecord(item);
+      if (!record) return null;
+
+      const kind = cleanString(record.kind);
+      if (!LIVE_GUIDE_DIRECTIVE_KINDS.has(kind as LiveGuideDirectiveKind)) {
+        return null;
+      }
+
+      const points = parseLiveGuidePoints(record.points);
+      if (points.length === 0) return null;
+      if ((kind === 'path' || kind === 'ghost') && points.length < 2) return null;
+
+      const id = cleanString(record.id) || `guide-${index + 1}`;
+      const label = cleanString(record.label);
+      const detail = cleanString(record.detail);
+      const emphasisRaw = cleanString(record.emphasis);
+      const emphasis = LIVE_GUIDE_EMPHASES.has(emphasisRaw as LiveGuideEmphasis)
+        ? (emphasisRaw as LiveGuideEmphasis)
+        : undefined;
+      const sequence =
+        typeof record.sequence === 'number' && Number.isFinite(record.sequence)
+          ? Math.min(Math.max(Math.round(record.sequence), 0), 100)
+          : undefined;
+
+      return {
+        id,
+        kind: kind as LiveGuideDirectiveKind,
+        points,
+        ...(label ? { label } : {}),
+        ...(detail ? { detail } : {}),
+        ...(emphasis ? { emphasis } : {}),
+        ...(sequence !== undefined ? { sequence } : {}),
+      } satisfies LiveGuideDirective;
+    })
+    .filter((directive): directive is LiveGuideDirective => directive !== null);
+}
+
+export function parseGuidanceMode(raw: unknown): GuidanceMode {
+  return raw === 'live_recommended' || raw === 'live_requested' ? raw : 'static';
+}
+
+export function parseLiveGuide(raw: unknown): LiveGuideResponse | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const directives = parseLiveGuideDirectives(record.directives);
+  const coachingNote = cleanString(record.coaching_note);
+  const interjectionRecord = asRecord(record.interjection);
+  const interjection: LiveGuideInterjection | undefined = interjectionRecord
+    ? {
+        should_speak: Boolean(interjectionRecord.should_speak),
+        ...(cleanString(interjectionRecord.urgency)
+          ? { urgency: cleanString(interjectionRecord.urgency) }
+          : {}),
+      }
+    : undefined;
+  const taskRecord = asRecord(record.task);
+  const task: LiveGuideTaskState | undefined = taskRecord
+    ? {
+        ...(cleanString(taskRecord.name) ? { name: cleanString(taskRecord.name) } : {}),
+        ...(cleanString(taskRecord.stage) ? { stage: cleanString(taskRecord.stage) } : {}),
+        ...(cleanString(taskRecord.progress) ? { progress: cleanString(taskRecord.progress) } : {}),
+      }
+    : undefined;
+  const hasTask = task && Object.keys(task).length > 0;
+
+  if (directives.length === 0 && !coachingNote && !interjection && !hasTask) {
+    return null;
+  }
+
+  return {
+    directives,
+    clear_previous: record.clear_previous !== false,
+    ...(coachingNote ? { coaching_note: coachingNote } : {}),
+    ...(interjection ? { interjection } : {}),
+    ...(hasTask ? { task } : {}),
+  };
+}
+
 function parsePhysicalTask(raw: unknown): PhysicalTaskResponse | null {
   const record = asRecord(raw);
   if (!record) return null;
@@ -889,6 +1110,7 @@ function buildVoiceResponsePayload(record: Record<string, unknown>): VoiceRespon
   const visualImageGroups = parseVisualImageGroupRequests(record.visual_image_groups);
   const physicalTask = parsePhysicalTask(record.physical_task);
   const visualGuidance = parseVisualGuidance(record.visual_guidance);
+  const liveGuide = parseLiveGuide(record.live_guide);
 
   return {
     needs_visual_explanation:
@@ -904,6 +1126,8 @@ function buildVoiceResponsePayload(record: Record<string, unknown>): VoiceRespon
     visual_image_groups: visualImageGroups,
     physical_task: physicalTask,
     visual_guidance: visualGuidance,
+    guidance_mode: parseGuidanceMode(record.guidance_mode),
+    live_guide: liveGuide,
   };
 }
 

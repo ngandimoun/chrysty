@@ -111,6 +111,20 @@ interface PendingFunctionCall {
   arguments: Record<string, unknown>;
 }
 
+export interface LiveGuideTurnOptions {
+  /** True when the client is in Live Guide mode (live camera + Chrysty cursor). */
+  active: boolean;
+  /** True for automatic silent monitoring turns ("Watch me"), not user questions. */
+  monitor?: boolean;
+  /** When set, STT is skipped and this text is used as the turn transcript. */
+  transcriptOverride?: string;
+  /** Compact client-provided summary of the previous guide state for continuity. */
+  context?: string;
+}
+
+const LIVE_GUIDE_MONITOR_TRANSCRIPT =
+  'Automatic Live Guide monitoring check. Look at the current camera frame and decide whether the user needs a correction, warning, or updated guidance right now.';
+
 function buildTranscriptMultimodalCue(
   transcript: string,
   options: {
@@ -123,6 +137,7 @@ function buildTranscriptMultimodalCue(
     hasFocusAnnotation?: boolean;
     perception?: PerceptionSnapshot;
     imageIds?: string[];
+    liveGuide?: LiveGuideTurnOptions;
   },
 ): string {
   const toolsLine = `Tools enabled this turn: ${formatToolSelection(options.selection ?? EMPTY_TOOL_SELECTION)}. Do not use any other tools.`;
@@ -155,13 +170,27 @@ function buildTranscriptMultimodalCue(
     );
   }
 
-  if (options.imageIds && options.imageIds.length > 0) {
+  if (options.imageIds && options.imageIds.length > 0 && !options.liveGuide?.active) {
     attachmentLines.push(
       `Use these camera image ids when returning visual_guidance: ${options.imageIds.join(', ')}.`,
     );
     attachmentLines.push(
       'For practical physical tasks with these camera images, return a focused visual_guidance payload in the first response: primary_image_id, active_card_id, 1 active_step card with useful detail, relevant scene_items if visible, and overlays you can place confidently.',
     );
+  }
+
+  if (options.liveGuide?.active) {
+    attachmentLines.push(
+      'Live Guide mode is active: the attached camera image is the user\'s CURRENT live view (the reference frame). Return a live_guide object with directives placed on this exact frame using integer coordinates from 0 to 1000 (x grows right, y grows down). Do not return visual_guidance or visual_image_groups in this mode.',
+    );
+    if (options.liveGuide.context) {
+      attachmentLines.push(`Previous Live Guide state: ${options.liveGuide.context}`);
+    }
+    if (options.liveGuide.monitor) {
+      attachmentLines.push(
+        'This is an automatic monitoring check, not a user question. If nothing important changed, return live_guide.interjection.should_speak=false, an empty spoken_transcript, needs_visual_explanation=false, and no new directives. Only speak when the user is about to make a mistake, missed a step, finished a step, or safety requires it.',
+      );
+    }
   }
 
   const perceptionBlock = buildPerceptionPromptBlock(options.perception);
@@ -197,6 +226,7 @@ function buildResponseSystemInstruction(
   memoryRecall?: MemoryRecallContext,
   transcript?: string,
   delegation?: DelegationPromptContext,
+  liveGuide?: LiveGuideTurnOptions,
 ): string {
   const base = `You are Chrysty, a voice assistant and the general companion for the Chrysty ecosystem.
 
@@ -256,6 +286,22 @@ Given the user's transcript (and optionally attached visual material from their 
   - cards: array of { id, kind, title, body, image_id, related_item_ids, step_number, status }. Kinds: goal, image_index, materials, plan, active_step, check, mistake, difference, progress, confidence, safety, choice, comparison, note.
   - differences: array of { id, image_id, title, detail, severity, related_item_ids } for follow-up checks.
 - visual_image_groups (array, optional): grouped Pexels photo search requests only for consumer explanations where real-world reference photos are necessary. Each group has id, title, intent (ingredient|tool|step|part|place|safety|example), layout (single|grid|sequence|comparison), queries (1-6 concrete Pexels search strings), optional placement, and optional maxItems. Use [] or omit when photos are not clearly useful.
+- guidance_mode (string): how guidance should be delivered this turn. This is a semantic decision from the meaning of the user's request in ANY language — never keyword matching:
+  - "static" (default): a spoken answer, explanation canvas, or annotated stills are enough (identification, reading, facts, comparisons).
+  - "live_recommended": the user is performing or about to perform a physical action where step-by-step real-time on-camera pointing would clearly help (aiming a shot, assembling parts in order, adjusting position/technique, following a physical sequence). The app will offer the user a live guidance option.
+  - "live_requested": the user explicitly asked, in their own words and language, to be guided while they do it / shown live / walked through in real time. The app enters live guidance directly.
+- live_guide (object, optional): ONLY return this when the current turn runs in Live Guide mode (the user prompt will say so). It drives an animated Chrysty cursor on the user's LIVE camera view:
+  - directives: up to 8 (prefer 1-4) of { id, kind, points, label, detail, emphasis, sequence }.
+    - kind "pointer": one point; an animated cursor that points at the exact spot to look at or act on.
+    - kind "path": 2+ ordered points; a motion/trajectory line (e.g. where a ball should travel, direction to move a part).
+    - kind "region": 2+ points forming the bounding area to highlight (e.g. the zone to inspect or avoid).
+    - kind "ghost": 2+ points outlining the target end-state, drawn semi-transparent ("what good looks like").
+    - points: integer coordinates 0-1000 on the attached reference frame (x right, y down). Place them only where the frame clearly supports it.
+    - label: 2-4 word on-screen name (same language as the user). detail: one short sentence. emphasis: primary|secondary|warning. sequence: action order starting at 1.
+  - clear_previous (boolean): true (default) to replace previous directives, false to add to them.
+  - coaching_note (string, optional): one short status line shown near the camera view.
+  - interjection { should_speak, urgency }: for automatic monitoring turns; should_speak=false means stay silent.
+  - task { name, stage, progress }: compact task continuity state; keep it updated every Live Guide turn.
 
 Rules:
 - Detect the user's language and tone and mirror them in spoken_transcript and explanation_text.
@@ -326,6 +372,17 @@ explanation_text formatting (visual canvas — rich markdown allowed):
 Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
 
   const blocks = [base];
+
+  if (liveGuide?.active) {
+    blocks.push(`Live Guide mode rules (active this turn):
+- You are guiding the user in real time on their live camera with voice plus an on-screen Chrysty cursor. Stay domain-free: infer the actual task (any sport, repair, kitchen, DIY, or other physical work) from the user and the frame.
+- The attached camera frame is the CURRENT state of the scene. Base every directive on what is visible in it right now, and continue from what the user already did.
+- spoken_transcript narrates only the current action: what to do, where (referencing your pointer/path), and one check or reason. Keep it natural and short; the cursor shows the "where" so you do not need to describe positions verbally in detail.
+- Return few, reliable directives. One pointer plus at most one path/region beats five uncertain marks. If the camera angle makes a location uncertain, say what better angle you need instead of guessing coordinates.
+- Always update live_guide.task (name, stage, progress) so the session stays coherent across turns.
+- Set needs_visual_explanation=false in Live Guide mode unless the user explicitly asks for something to read; the camera view is the workspace.
+- For monitoring turns, respond with interjection.should_speak=false and an empty spoken_transcript unless intervention genuinely helps.`);
+  }
 
   if (userContext) {
     blocks.push(buildUserTemporalContextBlock(userContext));
@@ -576,6 +633,7 @@ interface RunVoiceResponseOptions {
   memoryRecall?: MemoryRecallContext;
   transcript?: string;
   delegation?: DelegationPromptContext;
+  liveGuide?: LiveGuideTurnOptions;
 }
 
 async function runVoiceResponseInteraction(
@@ -595,6 +653,7 @@ async function runVoiceResponseInteraction(
     options?.memoryRecall,
     options?.transcript,
     options?.delegation,
+    options?.liveGuide,
   );
   const tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
   const customCtx = {
@@ -753,6 +812,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     hasFocusAnnotation?: boolean;
     perception?: PerceptionSnapshot;
     imageIds?: string[];
+    liveGuide?: LiveGuideTurnOptions;
   },
   userContext?: UserContext,
   selection?: VoiceToolSelection,
@@ -779,6 +839,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     hasFocusAnnotation: cueContext.hasFocusAnnotation,
     perception: cueContext.perception,
     imageIds: cueContext.imageIds,
+    liveGuide: cueContext.liveGuide,
   });
 
   const inputParts: InteractionContentPart[] = [{ type: 'text', text: cue }];
@@ -822,6 +883,7 @@ async function createVoiceResponseFromTranscriptAndImages(
           memoryRecall,
           transcript,
           delegation,
+          liveGuide: cueContext.liveGuide,
         },
       ),
     { timeoutMs: getGeminiTeacherTimeoutMs() },
@@ -980,9 +1042,10 @@ export async function buildVoiceResponseFromMultimodal(
   ecosystemActivity?: UserEcosystemActivity | null,
   memoryContext?: MemoryContext,
   delegation?: DelegationPromptContext,
+  liveGuide?: LiveGuideTurnOptions,
 ): Promise<{
   payload: VoiceResponsePayload;
-  ttsPrompt: string;
+  ttsPrompt: string | null;
   transcript: string;
   understandingMs: number;
   sttMs: number;
@@ -990,13 +1053,12 @@ export async function buildVoiceResponseFromMultimodal(
   llmMs: number;
   grounding: ToolGroundingResult;
 }> {
-  const normalizedMimeType = normalizeAudioMimeType(mimeType);
-  assertSupportedAudioMimeType(normalizedMimeType);
+  const useTranscriptOverride = Boolean(liveGuide?.transcriptOverride?.trim() || liveGuide?.monitor);
 
-  const { bytes: preparedAudioBytes, mimeType: interactionMimeType } = sanitizeInteractionAudio(
-    audioBytes,
-    normalizedMimeType,
-  );
+  if (!useTranscriptOverride) {
+    const normalizedMimeType = normalizeAudioMimeType(mimeType);
+    assertSupportedAudioMimeType(normalizedMimeType);
+  }
 
   const normalizedImages = (images ?? []).map((image, index) => ({
     ...image,
@@ -1018,11 +1080,25 @@ export async function buildVoiceResponseFromMultimodal(
   const model = getGeminiResponseModel();
   const pipelineStartedAt = performance.now();
 
-  const { transcript, sttMs } = await transcribeAudioToText(
-    preparedAudioBytes,
-    interactionMimeType,
-    audioDurationMs,
-  );
+  let transcript: string;
+  let sttMs = 0;
+
+  if (useTranscriptOverride) {
+    transcript = liveGuide?.transcriptOverride?.trim() || LIVE_GUIDE_MONITOR_TRANSCRIPT;
+  } else {
+    const normalizedMimeType = normalizeAudioMimeType(mimeType);
+    const { bytes: preparedAudioBytes, mimeType: interactionMimeType } = sanitizeInteractionAudio(
+      audioBytes,
+      normalizedMimeType,
+    );
+    const sttResult = await transcribeAudioToText(
+      preparedAudioBytes,
+      interactionMimeType,
+      audioDurationMs,
+    );
+    transcript = sttResult.transcript;
+    sttMs = sttResult.sttMs;
+  }
 
   const totalImageCount = normalizedImages.length + referenceImageDocs.length;
   const routeContext = {
@@ -1030,11 +1106,16 @@ export async function buildVoiceResponseFromMultimodal(
     imageCount: totalImageCount,
     userContext,
   };
+  const isMonitorTurn = Boolean(liveGuide?.monitor);
 
   const [{ selection, routeMs }, memories, recentTurns] = await Promise.all([
-    routeVoiceTools(client, transcript, routeContext),
-    memoryContext ? searchUserMemories(memoryContext.memoryUserId, transcript) : Promise.resolve([]),
-    memoryContext
+    isMonitorTurn
+      ? Promise.resolve({ selection: EMPTY_TOOL_SELECTION, routeMs: 0 })
+      : routeVoiceTools(client, transcript, routeContext),
+    memoryContext && !isMonitorTurn
+      ? searchUserMemories(memoryContext.memoryUserId, transcript)
+      : Promise.resolve([]),
+    memoryContext && !isMonitorTurn
       ? fetchRecentTurns({
           workspaceId: memoryContext.workspaceId,
           astraKey: memoryContext.astraKey,
@@ -1074,6 +1155,7 @@ export async function buildVoiceResponseFromMultimodal(
     hasFocusAnnotation: normalizedImages.some((image) => (image.focusAnnotations?.length ?? 0) > 0),
     perception: normalizedImages.find((image) => image.perception)?.perception,
     imageIds: normalizedImages.map((image) => image.imageId),
+    ...(liveGuide?.active ? { liveGuide } : {}),
   };
 
   const llmStartedAt = performance.now();
@@ -1117,9 +1199,16 @@ export async function buildVoiceResponseFromMultimodal(
 
   const llmMs = performance.now() - llmStartedAt;
 
+  // Silent Live Guide monitoring turns legitimately return no spoken transcript.
+  const ttsPrompt = result.payload.spoken_transcript.trim()
+    ? buildTtsPromptFromPayload(result.payload)
+    : isMonitorTurn
+      ? null
+      : buildTtsPromptFromPayload(result.payload);
+
   return {
     payload: result.payload,
-    ttsPrompt: buildTtsPromptFromPayload(result.payload),
+    ttsPrompt,
     transcript,
     understandingMs: performance.now() - pipelineStartedAt,
     sttMs,
@@ -1141,7 +1230,8 @@ export async function buildVoiceResponseFromAudio(
   const result = await buildVoiceResponseFromMultimodal(client, audioBytes, mimeType, undefined, userContext);
   return {
     payload: result.payload,
-    ttsPrompt: result.ttsPrompt,
+    // Non-live turns always produce a TTS prompt.
+    ttsPrompt: result.ttsPrompt ?? '',
     understandingMs: result.understandingMs,
   };
 }
@@ -1154,7 +1244,7 @@ export async function buildSpokenResponsePromptFromAudio(
 ): Promise<{ ttsPrompt: string; understandingMs: number }> {
   const result = await buildVoiceResponseFromMultimodal(client, audioBytes, mimeType);
   return {
-    ttsPrompt: result.ttsPrompt,
+    ttsPrompt: result.ttsPrompt ?? '',
     understandingMs: result.understandingMs,
   };
 }

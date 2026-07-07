@@ -29,9 +29,16 @@ import type { ResponseTimings } from '@/lib/gemini/config';
 import { formatUserFacingGeminiError } from '@/lib/gemini/user-facing-error';
 import type { PerceptionSnapshot } from '@/lib/perception/types';
 import { consumeResponseStream } from '@/lib/streaming/consume-response-stream';
-import { EMPTY_EXPLANATION, type ExplanationState, type GuidanceImage } from '@/lib/streaming/types';
+import {
+  EMPTY_EXPLANATION,
+  type ExplanationState,
+  type GuidanceImage,
+  type LiveGuideUpdate,
+} from '@/lib/streaming/types';
 
 export type AgentState = 'idle' | 'recording' | 'processing';
+
+export type VoiceRequestMode = 'default' | 'live_guide';
 
 export interface VisualCapture {
   imageId?: string;
@@ -52,6 +59,11 @@ interface UseVoiceAgentOptions {
   onSpeakingEnd?: () => void;
   onRecordingStart?: () => void;
   getVisualCapture?: () => Promise<VisualCapture[]>;
+  /** Request mode appended to each send; live_guide turns render directives on the live camera. */
+  getRequestMode?: () => VoiceRequestMode;
+  /** Compact previous Live Guide state forwarded to the model for continuity. */
+  getLiveGuideContext?: () => string | null;
+  onLiveGuide?: (update: LiveGuideUpdate) => void;
 }
 
 interface RecordingResult {
@@ -76,6 +88,7 @@ interface UseVoiceAgentResult {
   stopRecordingAndSend: () => Promise<RecordingResult>;
   toggleRecording: () => Promise<RecordingResult>;
   cancelRecording: () => Promise<void>;
+  sendMonitorTurn: (capture: VisualCapture | null) => Promise<RecordingResult>;
   stopSpeaking: () => void;
   replayLastResponseAudio: () => Promise<void>;
   dismissExplanation: () => void;
@@ -95,6 +108,9 @@ export function useVoiceAgent({
   onSpeakingEnd,
   onRecordingStart,
   getVisualCapture,
+  getRequestMode,
+  getLiveGuideContext,
+  onLiveGuide,
 }: UseVoiceAgentOptions): UseVoiceAgentResult {
   const [state, setState] = useState<AgentState>('idle');
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -115,6 +131,10 @@ export function useVoiceAgent({
   const getStreamRef = useRef(getStream);
   const explanationImageUrlsRef = useRef<string[]>([]);
   const ttsErrorRef = useRef<string | null>(null);
+  const getRequestModeRef = useRef(getRequestMode);
+  const getLiveGuideContextRef = useRef(getLiveGuideContext);
+  const onLiveGuideRef = useRef(onLiveGuide);
+  const monitorAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     onSpeakingStartRef.current = onSpeakingStart;
@@ -122,7 +142,19 @@ export function useVoiceAgent({
     onRecordingStartRef.current = onRecordingStart;
     getVisualCaptureRef.current = getVisualCapture;
     getStreamRef.current = getStream;
-  }, [getStream, getVisualCapture, onRecordingStart, onSpeakingEnd, onSpeakingStart]);
+    getRequestModeRef.current = getRequestMode;
+    getLiveGuideContextRef.current = getLiveGuideContext;
+    onLiveGuideRef.current = onLiveGuide;
+  }, [
+    getLiveGuideContext,
+    getRequestMode,
+    getStream,
+    getVisualCapture,
+    onLiveGuide,
+    onRecordingStart,
+    onSpeakingEnd,
+    onSpeakingStart,
+  ]);
 
   const clearExplanationImages = useCallback(() => {
     explanationImageUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -171,6 +203,8 @@ export function useVoiceAgent({
     const activeRecorder = recorderRef.current;
     recorderRef.current = null;
     void activeRecorder?.stop().catch(() => {});
+    monitorAbortRef.current?.abort();
+    monitorAbortRef.current = null;
     requestStartedAtRef.current = null;
     firstAudioAtRef.current = null;
     ttsErrorRef.current = null;
@@ -203,6 +237,8 @@ export function useVoiceAgent({
     setError(null);
     ttsErrorRef.current = null;
     stopSpeaking();
+    monitorAbortRef.current?.abort();
+    monitorAbortRef.current = null;
     setLastResponseAudio(null);
     requestStartedAtRef.current = performance.now();
     firstAudioAtRef.current = null;
@@ -247,6 +283,15 @@ export function useVoiceAgent({
       appendUserContextToFormData(formData, userContextFields);
       appendCompanionProfileToFormData(formData, await loadCompanionProfileForRequest());
       appendReferenceDocumentsToFormData(formData, referenceDocuments);
+
+      const requestMode = getRequestModeRef.current?.() ?? 'default';
+      if (requestMode !== 'default') {
+        formData.append('mode', requestMode);
+        const liveGuideContext = getLiveGuideContextRef.current?.();
+        if (liveGuideContext) {
+          formData.append('liveGuideContext', liveGuideContext);
+        }
+      }
 
       if (visualsWithIds.length > 0) {
         visualsWithIds.forEach((visual, index) => {
@@ -344,6 +389,9 @@ export function useVoiceAgent({
             userImages,
           });
         },
+        onLiveGuide: (update) => {
+          onLiveGuideRef.current?.(update);
+        },
         onAudio: (chunk) => {
           responseSampleRate = chunk.sample_rate ?? responseSampleRate;
           pcmChunks.push(base64ToPcmBytes(chunk.data));
@@ -433,6 +481,85 @@ export function useVoiceAgent({
       return { ok: false, error: message };
     }
   }, [clearExplanationImages, getPlayer, stopSpeaking]);
+
+  const sendMonitorTurn = useCallback(
+    async (capture: VisualCapture | null): Promise<RecordingResult> => {
+      if (!capture) {
+        return { ok: false, error: 'No camera frame available.' };
+      }
+
+      // Never interleave silent monitoring with an active user turn.
+      if (recorderRef.current?.isRecording() || monitorAbortRef.current) {
+        return { ok: false };
+      }
+
+      const abort = new AbortController();
+      monitorAbortRef.current = abort;
+
+      try {
+        const formData = new FormData();
+        formData.append('mode', 'live_guide_monitor');
+        const liveGuideContext = getLiveGuideContextRef.current?.();
+        if (liveGuideContext) {
+          formData.append('liveGuideContext', liveGuideContext);
+        }
+        appendUserContextToFormData(formData, await collectUserContextForRequest());
+        formData.append('images', capture.blob, imageFilename(capture.mimeType, 0));
+        formData.append(
+          'imagesMeta',
+          JSON.stringify([
+            {
+              imageId: capture.imageId || 'capture-1',
+              mimeType: capture.mimeType,
+              width: capture.width,
+              height: capture.height,
+              captureMode: capture.captureMode,
+            },
+          ]),
+        );
+
+        const player = getPlayer();
+        const pendingEnqueues: Promise<void>[] = [];
+        const response = await fetch('/api/respond/stream', {
+          method: 'POST',
+          credentials: 'include',
+          headers: uploadAstraKeyHeaders(),
+          body: formData,
+          signal: abort.signal,
+        });
+
+        const streamResult = await consumeResponseStream(response, {
+          onLiveGuide: (update) => {
+            onLiveGuideRef.current?.(update);
+          },
+          onAudio: (chunk) => {
+            pendingEnqueues.push(player.enqueue(chunk));
+          },
+        });
+
+        if (streamResult.error) {
+          return { ok: false, error: streamResult.error };
+        }
+
+        await Promise.all(pendingEnqueues);
+        await player.flush();
+        return { ok: true };
+      } catch (monitorError) {
+        if (abort.signal.aborted) {
+          return { ok: false };
+        }
+        return {
+          ok: false,
+          error: monitorError instanceof Error ? monitorError.message : 'Monitoring turn failed.',
+        };
+      } finally {
+        if (monitorAbortRef.current === abort) {
+          monitorAbortRef.current = null;
+        }
+      }
+    },
+    [getPlayer],
+  );
 
   const startRecording = useCallback(async (): Promise<RecordingResult> => {
     const activeStream = getStreamRef.current?.() ?? stream;
@@ -556,6 +683,7 @@ export function useVoiceAgent({
     stopRecordingAndSend,
     toggleRecording,
     cancelRecording,
+    sendMonitorTurn,
     stopSpeaking,
     replayLastResponseAudio,
     dismissExplanation: clearExplanation,

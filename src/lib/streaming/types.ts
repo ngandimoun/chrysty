@@ -22,8 +22,19 @@ export type { ChartSpec, CodeExecutionImage } from '@/lib/charts/types';
 export type { StockImageGroup } from '@/lib/visuals/stock-images';
 
 import type { ChartSpec, CodeExecutionImage } from '@/lib/charts/types';
-import type { PhysicalTaskResponse, VisualGuidanceResponse } from '@/lib/gemini/voice-response-schema';
+import type {
+  GuidanceMode,
+  LiveGuideResponse,
+  PhysicalTaskResponse,
+  VisualGuidanceResponse,
+} from '@/lib/gemini/voice-response-schema';
 import type { StockImageGroup } from '@/lib/visuals/stock-images';
+
+export interface LiveGuideUpdate {
+  liveGuide: LiveGuideResponse | null;
+  guidanceMode: GuidanceMode;
+  monitor: boolean;
+}
 
 export interface GuidanceImage {
   id: string;

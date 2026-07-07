@@ -28,6 +28,8 @@ interface CameraPreviewProps {
   aspectRatio?: CameraAspectRatio;
   onVideoReady?: (video: HTMLVideoElement) => void;
   className?: string;
+  /** Extra overlay layer rendered above the preview (e.g. Live Guide cursor). */
+  overlaySlot?: React.ReactNode;
   pendingPhotoCount?: number;
   canFlipCamera?: boolean;
   canUseTorch?: boolean;
@@ -57,6 +59,7 @@ export function CameraPreview({
   aspectRatio = '16:9',
   onVideoReady,
   className,
+  overlaySlot,
   pendingPhotoCount = 0,
   canFlipCamera = false,
   canUseTorch = false,
@@ -281,6 +284,8 @@ export function CameraPreview({
           </div>
         )}
       />
+
+      {overlaySlot}
 
       {canZoom && zoomRange ? (
         <CameraZoomControls

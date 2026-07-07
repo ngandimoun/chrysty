@@ -68,6 +68,9 @@ interface VisualizerSlotProps {
   onAspectRatioChange?: (ratio: CameraAspectRatio) => void;
   onFocusAtPoint?: (x: number, y: number) => void;
   onFocusAnnotationsChange?: (annotations: FocusAnnotation[]) => void;
+  /** When true the live camera stays the primary surface (Live Guide mode). */
+  liveGuideActive?: boolean;
+  liveGuideOverlay?: React.ReactNode;
 }
 
 export function VisualizerSlot({
@@ -108,8 +111,11 @@ export function VisualizerSlot({
   onAspectRatioChange,
   onFocusAtPoint,
   onFocusAnnotationsChange,
+  liveGuideActive = false,
+  liveGuideOverlay,
 }: VisualizerSlotProps) {
   const showExplanation =
+    !liveGuideActive &&
     explanation.active &&
     (explanation.fullText.length > 0 ||
       explanation.places.length > 0 ||
@@ -120,12 +126,14 @@ export function VisualizerSlot({
       explanation.physicalTask !== null ||
       explanation.visualGuidance !== null ||
       explanation.userImages.length > 0);
-  const showCamera = !showExplanation && !selectedDocument && cameraStream;
+  const showCamera = Boolean(
+    cameraStream && (liveGuideActive || (!showExplanation && !selectedDocument)),
+  );
 
   return (
     <div className="relative flex w-full min-h-0 items-center justify-center">
       <AnimatePresence mode="wait">
-        {selectedDocument ? (
+        {selectedDocument && !showCamera ? (
           <motion.div
             key={`document-${selectedDocument.id}`}
             initial={{ opacity: 0, scale: 0.98 }}
@@ -180,8 +188,9 @@ export function VisualizerSlot({
             className="flex justify-center"
           >
             <CameraPreview
-              stream={cameraStream}
+              stream={cameraStream!}
               facing={cameraFacing}
+              overlaySlot={liveGuideActive ? liveGuideOverlay : undefined}
               aspectRatio={cameraAspectRatio}
               onVideoReady={onCameraVideoReady}
               pendingPhotoCount={pendingPhotoCount}

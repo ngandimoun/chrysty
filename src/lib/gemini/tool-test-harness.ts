@@ -239,6 +239,7 @@ export function buildChartSpecSmokePayload(): VoiceResponsePayload {
     explanation_text: 'Quarterly sales increased steadily from Q1 through Q4.',
     spoken_transcript: 'Sales grew each quarter, peaking at 210k in Q4.',
     delivery_tag: '[friendly]',
+    guidance_mode: 'static',
     charts: [
       {
         id: 'quarterly_sales',
@@ -272,6 +273,7 @@ function runChartHydrationSmokeCase(testCase: ToolMatrixCase): {
     delivery_tag: '[friendly]',
     charts: [],
     visual_image_groups: [],
+    guidance_mode: 'static',
   };
 
   const payload = hydrateChartsFromCodeExecution(parsedPayload, {

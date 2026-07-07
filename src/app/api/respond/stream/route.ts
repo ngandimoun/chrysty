@@ -18,6 +18,7 @@ import { getGeminiApiKey } from '@/lib/gemini/config';
 import {
   buildVoiceResponseFromMultimodal,
   type DelegationPromptContext,
+  type LiveGuideTurnOptions,
 } from '@/lib/gemini/response-prompt';
 import { formatUserFacingGeminiError } from '@/lib/gemini/user-facing-error';
 import { parseCompanionProfileFromFormData } from '@/lib/gemini/companion-profile';
@@ -191,6 +192,21 @@ function parseCaptureMode(raw: unknown, fallback: CaptureMode): CaptureMode {
     raw === 'smart_snapshot'
     ? raw
     : fallback;
+}
+
+type RequestMode = 'default' | 'live_guide' | 'live_guide_monitor';
+
+function parseRequestMode(raw: unknown): RequestMode {
+  return raw === 'live_guide' || raw === 'live_guide_monitor' ? raw : 'default';
+}
+
+const MAX_LIVE_GUIDE_CONTEXT_CHARS = 600;
+
+function parseLiveGuideContext(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, MAX_LIVE_GUIDE_CONTEXT_CHARS);
 }
 
 function parseFocusAnnotation(raw: unknown): FocusAnnotation {
@@ -417,22 +433,34 @@ export async function POST(request: Request) {
     const audio = formData.get('audio');
     const mimeType = String(formData.get('mimeType') ?? '');
     const audioDurationMs = Number(formData.get('audioDurationMs') ?? 0);
+    const requestMode = parseRequestMode(formData.get('mode'));
+    const isMonitorTurn = requestMode === 'live_guide_monitor';
+    const liveGuideOptions: LiveGuideTurnOptions | undefined =
+      requestMode === 'default'
+        ? undefined
+        : {
+            active: true,
+            ...(isMonitorTurn ? { monitor: true } : {}),
+            ...(parseLiveGuideContext(formData.get('liveGuideContext'))
+              ? { context: parseLiveGuideContext(formData.get('liveGuideContext')) }
+              : {}),
+          };
 
-    if (!(audio instanceof File)) {
+    if (!(audio instanceof File) && !isMonitorTurn) {
       return new Response(encodeSseEvent('error', { message: 'Missing audio file.' }), {
         status: 400,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
       });
     }
 
-    if (audio.size === 0) {
+    if (audio instanceof File && audio.size === 0 && !isMonitorTurn) {
       return new Response(encodeSseEvent('error', { message: 'Audio file is empty.' }), {
         status: 400,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
       });
     }
 
-    if (audio.size > MAX_AUDIO_BYTES) {
+    if (audio instanceof File && audio.size > MAX_AUDIO_BYTES) {
       return new Response(encodeSseEvent('error', { message: 'Audio file exceeds the 20 MB limit.' }), {
         status: 413,
         headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
@@ -440,8 +468,18 @@ export async function POST(request: Request) {
     }
 
     const images = await parseImageInputs(formData);
+
+    if (isMonitorTurn && images.length === 0) {
+      return new Response(encodeSseEvent('error', { message: 'Monitoring turns require a camera frame.' }), {
+        status: 400,
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+      });
+    }
+
     const referenceDocuments = await parseReferenceDocumentInputs(formData);
-    const audioBytes = Buffer.from(await audio.arrayBuffer());
+    const audioBytes =
+      audio instanceof File && audio.size > 0 ? Buffer.from(await audio.arrayBuffer()) : Buffer.alloc(0);
+    const resolvedAudioMimeType = mimeType || (audio instanceof File ? audio.type : 'audio/wav');
     const durationMs = Number.isFinite(audioDurationMs) ? audioDurationMs : 0;
     const userContext = parseUserContextFromFormData(formData);
     const companionProfile = parseCompanionProfileFromFormData(formData);
@@ -451,7 +489,7 @@ export async function POST(request: Request) {
     if (shouldDebugResponseStream()) {
       console.debug('[respond-stream] request', {
         audioBytes: audioBytes.length,
-        mimeType: mimeType || audio.type,
+        mimeType: resolvedAudioMimeType,
         imageCount: images.length,
         images: images.map((image, index) => ({
           imageId: image.imageId ?? `capture-${index + 1}`,
@@ -476,7 +514,7 @@ export async function POST(request: Request) {
             await buildVoiceResponseFromMultimodal(
             client,
             audioBytes,
-            mimeType || audio.type,
+            resolvedAudioMimeType,
             images.length > 0 ? images : undefined,
             userContext,
             durationMs,
@@ -485,20 +523,30 @@ export async function POST(request: Request) {
             ecosystemActivity,
             memoryContext,
             delegation,
+            liveGuideOptions,
           );
+
+          const monitorStaysSilent =
+            isMonitorTurn &&
+            (payload.live_guide?.interjection?.should_speak === false ||
+              !payload.spoken_transcript.trim());
+          const shouldSpeak = Boolean(ttsPrompt) && !monitorStaysSilent;
 
           if (shouldDebugResponseStream()) {
             console.debug('[respond-stream] tts_start', {
               spokenChars: payload.spoken_transcript.length,
+              shouldSpeak,
             });
           }
 
-          const ttsTask = speakOnceResilient(ttsPrompt, { client })
-            .then((result) => ({ ok: true as const, ...result }))
-            .catch((error) => ({
-              ok: false as const,
-              message: error instanceof Error ? error.message : 'Voice playback failed.',
-            }));
+          const ttsTask = shouldSpeak
+            ? speakOnceResilient(ttsPrompt!, { client })
+                .then((result) => ({ ok: true as const, ...result }))
+                .catch((error) => ({
+                  ok: false as const,
+                  message: error instanceof Error ? error.message : 'Voice playback failed.',
+                }))
+            : Promise.resolve(null);
 
           if (grounding.usedSearch) {
             controller.enqueue(encoder.encode(encodeSseEvent('search_start', {})));
@@ -525,6 +573,20 @@ export async function POST(request: Request) {
           const physicalTask = payload.physical_task ?? null;
           const visualGuidance =
             payload.visual_guidance ?? buildVisualGuidanceFromPhysicalTask(physicalTask, images);
+          const liveGuide = payload.live_guide ?? null;
+          const guidanceMode = payload.guidance_mode;
+
+          if (liveGuide || guidanceMode !== 'static') {
+            controller.enqueue(
+              encoder.encode(
+                encodeSseEvent('live_guide', {
+                  liveGuide,
+                  guidanceMode,
+                  monitor: isMonitorTurn,
+                }),
+              ),
+            );
+          }
           const codeImages = grounding.codeImages;
           const webCitations = grounding.webCitations;
           const customToolCalls = grounding.customToolCalls;
@@ -673,7 +735,9 @@ export async function POST(request: Request) {
           let ttsMs = 0;
           let ttsFirstAudioMs: number | null = null;
 
-          if (ttsResult.ok) {
+          if (ttsResult === null) {
+            // Silent turn (e.g. Live Guide monitoring with no interjection) — no audio.
+          } else if (ttsResult.ok) {
             ttsMs = ttsResult.ttsMs;
             ttsFirstAudioMs = ttsResult.ttsMs;
             controller.enqueue(
@@ -701,7 +765,7 @@ export async function POST(request: Request) {
             }
           }
 
-          if (memoryContext && astraKey) {
+          if (memoryContext && astraKey && !isMonitorTurn) {
             const assistantContextText = buildAssistantContextText(payload);
             void Promise.allSettled([
               insertConversationTurn({
