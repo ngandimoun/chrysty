@@ -81,17 +81,18 @@ function buildVisualGuidanceFromPhysicalTask(
 ): VisualGuidanceResponse | null {
   if (!physicalTask) return null;
 
-  const primaryImageId = images[0]?.imageId || 'capture-1';
+  const defaultImageId = images[0]?.imageId || 'capture-1';
   const sceneItems = physicalTask.visual_annotations
     .filter((annotation) => annotation.x !== undefined && annotation.y !== undefined)
     .slice(0, 8)
     .map((annotation, index) => {
       const itemId = `physical-item-${index + 1}`;
+      const imageId = annotation.image_id ?? defaultImageId;
       return {
         item_id: itemId,
         display_number: index + 1,
         name: annotation.label,
-        image_id: primaryImageId,
+        image_id: imageId,
         point: { x: annotation.x ?? 0.5, y: annotation.y ?? 0.5 },
         ...(annotation.width !== undefined && annotation.height !== undefined
           ? {
@@ -116,7 +117,7 @@ function buildVisualGuidanceFromPhysicalTask(
     .map((item, index) => ({
       id: `physical-overlay-${index + 1}`,
       type: 'box' as const,
-      image_id: primaryImageId,
+      image_id: item.image_id,
       item_id: item.item_id,
       label: item.name,
       x: item.bbox!.x,
@@ -127,6 +128,7 @@ function buildVisualGuidanceFromPhysicalTask(
       ...(item.confidence ? { confidence: item.confidence } : {}),
     }));
 
+  const primaryImageId = sceneItems[0]?.image_id ?? defaultImageId;
   const firstAction = physicalTask.next_actions[0];
   const activeCardId = firstAction ? 'physical-active-step' : 'physical-image-index';
   const cards = [

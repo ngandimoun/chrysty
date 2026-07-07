@@ -233,8 +233,10 @@ function parsePhysicalVisualAnnotations(value: unknown): PhysicalVisualAnnotatio
       const width = parseCoordinate(record.width);
       const height = parseCoordinate(record.height);
       const confidence = cleanString(record.confidence);
+      const imageId = cleanString(record.image_id);
       return {
         label,
+        ...(imageId ? { image_id: imageId } : {}),
         ...(x !== undefined ? { x } : {}),
         ...(y !== undefined ? { y } : {}),
         ...(width !== undefined ? { width } : {}),

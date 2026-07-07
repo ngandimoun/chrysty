@@ -134,6 +134,7 @@ function buildTranscriptMultimodalCue(
     totalAttachmentCount: number;
     selection?: VoiceToolSelection;
     dimensions?: { width: number; height: number };
+    cameraImages?: Array<{ id: string; width?: number; height?: number }>;
     hasFocusAnnotation?: boolean;
     perception?: PerceptionSnapshot;
     imageIds?: string[];
@@ -144,7 +145,16 @@ function buildTranscriptMultimodalCue(
   const quoted = `User said:\n"""${transcript}"""`;
   const attachmentLines: string[] = [];
 
-  if (options.cameraImageCount === 1 && options.dimensions) {
+  if (options.cameraImages && options.cameraImages.length > 1) {
+    const lines = options.cameraImages.map((image) => {
+      const dims =
+        image.width && image.height ? `${image.width}x${image.height} pixels` : 'dimensions unknown';
+      return `- ${image.id}: ${dims}`;
+    });
+    attachmentLines.push(
+      `Attached camera images (use these exact ids for image_id and per-image annotations):\n${lines.join('\n')}`,
+    );
+  } else if (options.cameraImageCount === 1 && options.dimensions) {
     attachmentLines.push(
       `Look at the attached camera image (${options.dimensions.width}x${options.dimensions.height} pixels).`,
     );
@@ -174,6 +184,11 @@ function buildTranscriptMultimodalCue(
     attachmentLines.push(
       `Use these camera image ids when returning visual_guidance: ${options.imageIds.join(', ')}.`,
     );
+    if (options.imageIds.length > 1) {
+      attachmentLines.push(
+        'When multiple images are attached, image_id is required on every visual_annotations entry, scene_item, overlay, and image-specific card. Annotate each item on the image where it is visible.',
+      );
+    }
     attachmentLines.push(
       'For practical physical tasks with these camera images, return a focused visual_guidance payload in the first response: primary_image_id, active_card_id, 1 active_step card with useful detail, relevant scene_items if visible, and overlays you can place confidently.',
     );
@@ -275,14 +290,14 @@ Given the user's transcript (and optionally attached visual material from their 
   - next_actions: ordered array of { title, detail, why, check, example } for the current stage. Use enough steps to act safely; do not dump an entire manual unless asked.
   - safety_notes: array of { message, severity, stopCondition } for hazards, uncertainty, or professional-help boundaries.
   - follow_up_suggestions: short specific next questions/checks the user may naturally ask next. Omit when not useful.
-  - visual_annotations: array of { label, x, y, width, height, confidence } for visible items worth labeling. Coordinates are normalized 0-1 only when you can localize the item from the attached image; otherwise omit coordinates.
+  - visual_annotations: array of { label, image_id, box_2d, confidence } for visible items worth labeling. label is required. box_2d is Gemini-native [y_min, x_min, y_max, x_max] integers 0-1000 on the referenced image; omit box_2d when localization is uncertain. image_id is required when multiple camera images are attached.
 - visual_guidance (object, optional): user-image guidance deck for physical-world tasks. This is not markdown. The app renders it on the user's captured image(s):
   - primary_image_id: which captured image should open first, e.g. "capture-1".
   - active_card_id: the card that spoken_transcript is narrating.
   - current_state: short progress/status text.
   - next_target_state: what the next completed state should look like.
-  - scene_items: array of { item_id, display_number, name, role, image_id, point: {x,y}, bbox: {x,y,width,height}, confidence }. Use small stable numbers for relevant visible objects only.
-  - overlays: array of { id, type, image_id, item_id, label, x, y, width, height, from: {x,y}, to: {x,y}, points: [{x,y}], sequence, confidence }. Types: label, box, circle, arrow, line, path, number, spotlight, mask, ghost, check, warning.
+  - scene_items: array of { item_id, display_number, name, role, image_id, point: {x,y}, bbox: {box_2d}, confidence }. bbox.box_2d uses [y_min, x_min, y_max, x_max] integers 0-1000. Use small stable numbers for relevant visible objects only.
+  - overlays: array of { id, type, image_id, item_id, label, box_2d, from: {x,y}, to: {x,y}, points: [{x,y}], sequence, confidence }. Types: label, box, circle, arrow, line, path, number, spotlight, mask, ghost, check, warning. label is required for label, box, number, and warning overlays. box_2d uses [y_min, x_min, y_max, x_max] integers 0-1000 when drawing boxes/regions.
   - cards: array of { id, kind, title, body, image_id, related_item_ids, step_number, status }. Kinds: goal, image_index, materials, plan, active_step, check, mistake, difference, progress, confidence, safety, choice, comparison, note.
   - differences: array of { id, image_id, title, detail, severity, related_item_ids } for follow-up checks.
 - visual_image_groups (array, optional): grouped Pexels photo search requests only for consumer explanations where real-world reference photos are necessary. Each group has id, title, intent (ingredient|tool|step|part|place|safety|example), layout (single|grid|sequence|comparison), queries (1-6 concrete Pexels search strings), optional placement, and optional maxItems. Use [] or omit when photos are not clearly useful.
@@ -323,7 +338,7 @@ Rules:
 - Keep visual_guidance domain-free. Do not hardcode cooking, Arduino, bike, skincare, or pool templates. Infer the actual task from the user and image.
 - Follow a Clicky-style boundary: return semantic visual instructions only. Do not draw pixels, do not generate images, and do not describe renderer internals. Chrysty will render your normalized scene items, overlays, and cards on the user's image.
 - Use precise coordinates only when the attached image makes the location visible and you are confident. If coordinates are uncertain or missing, use cards without misleading arrows instead of guessing.
-- Every scene item, overlay, and image-specific card should include image_id when it refers to a captured image. Use the image ids listed in the user prompt.
+- Every scene item, overlay, and image-specific card must include image_id when multiple camera images are attached. Use the image ids listed in the user prompt. When only one image is attached, image_id may be omitted.
 - Use sleek minimal guidance: few important numbered badges, thin outlines, short cards, and no clutter. If many objects are visible, label only what matters for the current goal.
 - For ingredients/cooking scenes, number the useful ingredients, create materials/plan/active_step/check cards, and make voice narrate only the next action.
 - For DIY/build scenes, number components and tools, explain roles briefly, and use arrows/paths only for clearly visible connect/move/place steps.
@@ -540,6 +555,34 @@ function shouldDebugResponseInteraction(): boolean {
   );
 }
 
+function logGeminiInteractionError(error: unknown): void {
+  if (!shouldDebugResponseInteraction() && process.env.NODE_ENV === 'production') {
+    return;
+  }
+
+  if (error && typeof error === 'object') {
+    console.error('[response-interaction] gemini_error', error);
+    return;
+  }
+
+  console.error(
+    '[response-interaction] gemini_error',
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+async function createVoiceInteraction(
+  client: GoogleGenAI,
+  params: Parameters<GoogleGenAI['interactions']['create']>[0],
+): Promise<InteractionWithSteps> {
+  try {
+    return (await client.interactions.create(params)) as InteractionWithSteps;
+  } catch (error) {
+    logGeminiInteractionError(error);
+    throw error;
+  }
+}
+
 async function executeCustomToolCalls(
   calls: PendingFunctionCall[],
   customCtx: { userContext: UserContext },
@@ -671,7 +714,7 @@ async function runVoiceResponseInteraction(
 
   const allInteractions: InteractionWithSteps[] = [];
   const completedCallIds = new Set<string>();
-  let interaction = (await client.interactions.create({
+  let interaction = (await createVoiceInteraction(client, {
     model,
     store,
     system_instruction,
@@ -707,7 +750,7 @@ async function runVoiceResponseInteraction(
     }
 
     if (interaction.id) {
-      interaction = (await client.interactions.create({
+      interaction = (await createVoiceInteraction(client, {
         model,
         store,
         previous_interaction_id: interaction.id,
@@ -729,7 +772,7 @@ async function runVoiceResponseInteraction(
     }
 
     const fallbackTools = stripCustomFunctionTools(tools);
-    interaction = (await client.interactions.create({
+    interaction = (await createVoiceInteraction(client, {
       model,
       store: false,
       system_instruction,
@@ -777,8 +820,9 @@ function buildVoiceResponsePayloadFromInteraction(
   raw: string,
   allInteractions: InteractionWithSteps[],
   grounding: ToolGroundingResult,
+  imageIds?: string[],
 ): VoiceResponsePayload {
-  const { payload: parsedPayload, rawRecord } = parseVoiceResponsePayloadWithRaw(raw);
+  const { payload: parsedPayload, rawRecord } = parseVoiceResponsePayloadWithRaw(raw, { imageIds });
   const hydrated = hydrateChartsFromCodeExecution(parsedPayload, {
     usedCodeExecution: grounding.usedCodeExecution,
     interactions: allInteractions,
@@ -809,6 +853,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     referenceDocumentNames: string[];
     referenceDocuments: Array<Pick<ParsedReferenceDocument, 'name' | 'kind'>>;
     primaryImageDimensions?: { width: number; height: number };
+    cameraImages?: Array<{ id: string; width?: number; height?: number }>;
     hasFocusAnnotation?: boolean;
     perception?: PerceptionSnapshot;
     imageIds?: string[];
@@ -836,6 +881,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     totalAttachmentCount: imageInputs.length + documentInputs.length,
     selection: resolvedSelection,
     dimensions: cueContext.primaryImageDimensions,
+    cameraImages: cueContext.cameraImages,
     hasFocusAnnotation: cueContext.hasFocusAnnotation,
     perception: cueContext.perception,
     imageIds: cueContext.imageIds,
@@ -898,7 +944,12 @@ async function createVoiceResponseFromTranscriptAndImages(
   const grounding = toolsEnabled
     ? analyzeToolGroundingFromInteractions(allInteractions)
     : EMPTY_GROUNDING;
-  const payload = buildVoiceResponsePayloadFromInteraction(raw, allInteractions, grounding);
+  const payload = buildVoiceResponsePayloadFromInteraction(
+    raw,
+    allInteractions,
+    grounding,
+    cueContext.imageIds,
+  );
 
   return { payload, grounding, allInteractions };
 }
@@ -1146,12 +1197,17 @@ export async function buildVoiceResponseFromMultimodal(
     normalizedImages[0]?.width && normalizedImages[0]?.height
       ? { width: normalizedImages[0].width, height: normalizedImages[0].height }
       : undefined;
+  const cameraImages = normalizedImages.map((image) => ({
+    id: image.imageId,
+    ...(image.width && image.height ? { width: image.width, height: image.height } : {}),
+  }));
   const cueContext = {
     cameraImageCount: normalizedImages.length,
     referenceDocumentCount: referenceDocuments.length,
     referenceDocumentNames: referenceDocuments.map((doc) => doc.name),
     referenceDocuments: referenceDocuments.map((doc) => ({ name: doc.name, kind: doc.kind })),
     primaryImageDimensions,
+    cameraImages,
     hasFocusAnnotation: normalizedImages.some((image) => (image.focusAnnotations?.length ?? 0) > 0),
     perception: normalizedImages.find((image) => image.perception)?.perception,
     imageIds: normalizedImages.map((image) => image.imageId),

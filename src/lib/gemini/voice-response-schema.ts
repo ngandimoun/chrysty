@@ -105,11 +105,17 @@ export interface PhysicalSafetyNote {
 
 export interface PhysicalVisualAnnotation {
   label: string;
+  image_id?: string;
   x?: number;
   y?: number;
   width?: number;
   height?: number;
   confidence?: string;
+}
+
+/** Options passed to response parsers when camera images are attached. */
+export interface VoiceResponseParseOptions {
+  imageIds?: string[];
 }
 
 export interface PhysicalTaskResponse {
@@ -309,14 +315,19 @@ const SAFETY_NOTE_SCHEMA = {
   required: ['message'],
 } as const;
 
+const BOX_2D_SCHEMA = {
+  type: 'array',
+  minItems: 4,
+  maxItems: 4,
+  items: { type: 'integer', minimum: 0, maximum: 1000 },
+} as const;
+
 const VISUAL_ANNOTATION_SCHEMA = {
   type: 'object',
   properties: {
     label: { type: 'string' },
-    x: { type: 'number', minimum: 0, maximum: 1 },
-    y: { type: 'number', minimum: 0, maximum: 1 },
-    width: { type: 'number', minimum: 0, maximum: 1 },
-    height: { type: 'number', minimum: 0, maximum: 1 },
+    image_id: { type: 'string' },
+    box_2d: BOX_2D_SCHEMA,
     confidence: { type: 'string' },
   },
   required: ['label'],
@@ -337,54 +348,6 @@ const VISUAL_GUIDANCE_SCHEMA = {
     overlays: { type: 'array', items: GUIDANCE_FREEFORM_OBJECT_SCHEMA },
     cards: { type: 'array', items: GUIDANCE_FREEFORM_OBJECT_SCHEMA },
     differences: { type: 'array', items: GUIDANCE_FREEFORM_OBJECT_SCHEMA },
-  },
-} as const;
-
-const LIVE_GUIDE_POINT_SCHEMA = {
-  type: 'object',
-  properties: {
-    x: { type: 'number', minimum: 0, maximum: 1000 },
-    y: { type: 'number', minimum: 0, maximum: 1000 },
-  },
-  required: ['x', 'y'],
-} as const;
-
-const LIVE_GUIDE_DIRECTIVE_SCHEMA = {
-  type: 'object',
-  properties: {
-    id: { type: 'string' },
-    kind: { type: 'string', enum: ['pointer', 'path', 'region', 'ghost'] },
-    points: { type: 'array', minItems: 1, maxItems: 24, items: LIVE_GUIDE_POINT_SCHEMA },
-    label: { type: 'string' },
-    detail: { type: 'string' },
-    emphasis: { type: 'string', enum: ['primary', 'secondary', 'warning'] },
-    sequence: { type: 'integer', minimum: 0, maximum: 100 },
-  },
-  required: ['kind', 'points'],
-} as const;
-
-const LIVE_GUIDE_SCHEMA = {
-  type: 'object',
-  properties: {
-    directives: { type: 'array', maxItems: 8, items: LIVE_GUIDE_DIRECTIVE_SCHEMA },
-    clear_previous: { type: 'boolean' },
-    coaching_note: { type: 'string' },
-    interjection: {
-      type: 'object',
-      properties: {
-        should_speak: { type: 'boolean' },
-        urgency: { type: 'string' },
-      },
-      required: ['should_speak'],
-    },
-    task: {
-      type: 'object',
-      properties: {
-        name: { type: 'string' },
-        stage: { type: 'string' },
-        progress: { type: 'string' },
-      },
-    },
   },
 } as const;
 
@@ -410,8 +373,8 @@ export const VOICE_RESPONSE_JSON_SCHEMA = {
     charts: { type: 'array', items: CHART_SCHEMA },
     physical_task: PHYSICAL_TASK_SCHEMA,
     visual_guidance: VISUAL_GUIDANCE_SCHEMA,
-    guidance_mode: { type: 'string', enum: ['static', 'live_recommended', 'live_requested'] },
-    live_guide: LIVE_GUIDE_SCHEMA,
+    guidance_mode: { type: 'string' },
+    live_guide: GUIDANCE_FREEFORM_OBJECT_SCHEMA,
     visual_image_groups: {
       type: 'array',
       maxItems: MAX_STOCK_IMAGE_GROUPS,
@@ -638,7 +601,63 @@ function parseNormalizedCoordinate(value: unknown): number | undefined {
   return value;
 }
 
-function parseVisualAnnotations(raw: unknown): PhysicalVisualAnnotation[] {
+function requiresImageId(options?: VoiceResponseParseOptions): boolean {
+  return (options?.imageIds?.length ?? 0) > 1;
+}
+
+function resolveImageId(raw: unknown, options?: VoiceResponseParseOptions): string | undefined {
+  const imageId = cleanString(raw);
+  if (!imageId) {
+    return requiresImageId(options) ? undefined : options?.imageIds?.[0];
+  }
+  if (options?.imageIds && options.imageIds.length > 0 && !options.imageIds.includes(imageId)) {
+    return undefined;
+  }
+  return imageId;
+}
+
+/** Converts Gemini-native [y_min, x_min, y_max, x_max] (0-1000) to normalized 0-1 x/y/width/height. */
+function parseBox2d(raw: unknown): { x: number; y: number; width: number; height: number } | undefined {
+  if (!Array.isArray(raw) || raw.length !== 4) return undefined;
+
+  const coords = raw.map((value) => (typeof value === 'number' && Number.isFinite(value) ? value : NaN));
+  if (coords.some((value) => Number.isNaN(value) || value < 0 || value > 1000)) {
+    return undefined;
+  }
+
+  const [yMin, xMin, yMax, xMax] = coords;
+  if (yMax <= yMin || xMax <= xMin) return undefined;
+
+  return {
+    x: xMin / 1000,
+    y: yMin / 1000,
+    width: (xMax - xMin) / 1000,
+    height: (yMax - yMin) / 1000,
+  };
+}
+
+function parseLegacyBbox(record: Record<string, unknown>): { x: number; y: number; width: number; height: number } | undefined {
+  const x = parseNormalizedCoordinate(record.x);
+  const y = parseNormalizedCoordinate(record.y);
+  const width = parseNormalizedCoordinate(record.width);
+  const height = parseNormalizedCoordinate(record.height);
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return undefined;
+  }
+
+  return {
+    x,
+    y,
+    width: Math.min(width, 1 - x),
+    height: Math.min(height, 1 - y),
+  };
+}
+
+function parseSpatialBbox(record: Record<string, unknown>): { x: number; y: number; width: number; height: number } | undefined {
+  return parseBox2d(record.box_2d) ?? parseLegacyBbox(record);
+}
+
+function parseVisualAnnotations(raw: unknown, options?: VoiceResponseParseOptions): PhysicalVisualAnnotation[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -650,18 +669,16 @@ function parseVisualAnnotations(raw: unknown): PhysicalVisualAnnotation[] {
       const label = cleanString(record.label);
       if (!label) return null;
 
-      const x = parseNormalizedCoordinate(record.x);
-      const y = parseNormalizedCoordinate(record.y);
-      const width = parseNormalizedCoordinate(record.width);
-      const height = parseNormalizedCoordinate(record.height);
+      const imageId = resolveImageId(record.image_id, options);
+      if (requiresImageId(options) && !imageId) return null;
+
+      const bbox = parseSpatialBbox(record);
       const confidence = cleanString(record.confidence);
 
       return {
         label,
-        ...(x !== undefined ? { x } : {}),
-        ...(y !== undefined ? { y } : {}),
-        ...(width !== undefined ? { width } : {}),
-        ...(height !== undefined ? { height } : {}),
+        ...(imageId ? { image_id: imageId } : {}),
+        ...(bbox ? { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height } : {}),
         ...(confidence ? { confidence } : {}),
       } satisfies PhysicalVisualAnnotation;
     })
@@ -682,21 +699,7 @@ function parseGuidanceBbox(
 ): { x: number; y: number; width: number; height: number } | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
-
-  const x = parseNormalizedCoordinate(record.x);
-  const y = parseNormalizedCoordinate(record.y);
-  const width = parseNormalizedCoordinate(record.width);
-  const height = parseNormalizedCoordinate(record.height);
-  if (x === undefined || y === undefined || width === undefined || height === undefined) {
-    return undefined;
-  }
-
-  return {
-    x,
-    y,
-    width: Math.min(width, 1 - x),
-    height: Math.min(height, 1 - y),
-  };
+  return parseSpatialBbox(record);
 }
 
 function parseStringArray(raw: unknown, maxItems: number): string[] {
@@ -736,7 +739,7 @@ const GUIDANCE_OVERLAY_TYPES = new Set<VisualGuidanceOverlayType>([
   'warning',
 ]);
 
-function parseGuidanceSceneItems(raw: unknown): VisualGuidanceSceneItem[] {
+function parseGuidanceSceneItems(raw: unknown, options?: VoiceResponseParseOptions): VisualGuidanceSceneItem[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -748,14 +751,17 @@ function parseGuidanceSceneItems(raw: unknown): VisualGuidanceSceneItem[] {
       const name = cleanString(record.name);
       if (!name) return null;
 
+      const imageId = resolveImageId(record.image_id, options);
+      if (requiresImageId(options) && !imageId) return null;
+
       const itemId = cleanString(record.item_id) || `item-${index + 1}`;
       const displayNumber =
         typeof record.display_number === 'number' && Number.isInteger(record.display_number)
           ? Math.min(Math.max(record.display_number, 1), 99)
           : undefined;
       const role = cleanString(record.role);
-      const imageId = cleanString(record.image_id);
       const confidence = cleanString(record.confidence);
+      const bbox = parseGuidanceBbox(record.bbox) ?? parseSpatialBbox(record);
 
       return {
         item_id: itemId,
@@ -764,14 +770,16 @@ function parseGuidanceSceneItems(raw: unknown): VisualGuidanceSceneItem[] {
         ...(role ? { role } : {}),
         ...(imageId ? { image_id: imageId } : {}),
         ...(parsePoint(record.point) ? { point: parsePoint(record.point) } : {}),
-        ...(parseGuidanceBbox(record.bbox) ? { bbox: parseGuidanceBbox(record.bbox) } : {}),
+        ...(bbox ? { bbox } : {}),
         ...(confidence ? { confidence } : {}),
       } satisfies VisualGuidanceSceneItem;
     })
     .filter((item): item is VisualGuidanceSceneItem => item !== null);
 }
 
-function parseGuidanceOverlays(raw: unknown): VisualGuidanceOverlay[] {
+const OVERLAY_TYPES_REQUIRING_LABEL = new Set<VisualGuidanceOverlayType>(['label', 'box', 'number', 'warning']);
+
+function parseGuidanceOverlays(raw: unknown, options?: VoiceResponseParseOptions): VisualGuidanceOverlay[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -785,10 +793,15 @@ function parseGuidanceOverlays(raw: unknown): VisualGuidanceOverlay[] {
         return null;
       }
 
+      const overlayType = type as VisualGuidanceOverlayType;
       const id = cleanString(record.id) || `overlay-${index + 1}`;
-      const imageId = cleanString(record.image_id);
+      const imageId = resolveImageId(record.image_id, options);
+      if (requiresImageId(options) && !imageId) return null;
+
       const itemId = cleanString(record.item_id);
       const label = cleanString(record.label);
+      if (OVERLAY_TYPES_REQUIRING_LABEL.has(overlayType) && !label) return null;
+
       const confidence = cleanString(record.confidence);
       const sequence =
         typeof record.sequence === 'number' && Number.isFinite(record.sequence)
@@ -797,21 +810,15 @@ function parseGuidanceOverlays(raw: unknown): VisualGuidanceOverlay[] {
       const points = Array.isArray(record.points)
         ? record.points.map(parsePoint).filter((point): point is VisualGuidancePoint => Boolean(point)).slice(0, 24)
         : undefined;
+      const spatial = parseSpatialBbox(record);
 
       return {
         id,
-        type: type as VisualGuidanceOverlayType,
+        type: overlayType,
         ...(imageId ? { image_id: imageId } : {}),
         ...(itemId ? { item_id: itemId } : {}),
         ...(label ? { label } : {}),
-        ...(parseNormalizedCoordinate(record.x) !== undefined ? { x: parseNormalizedCoordinate(record.x) } : {}),
-        ...(parseNormalizedCoordinate(record.y) !== undefined ? { y: parseNormalizedCoordinate(record.y) } : {}),
-        ...(parseNormalizedCoordinate(record.width) !== undefined
-          ? { width: parseNormalizedCoordinate(record.width) }
-          : {}),
-        ...(parseNormalizedCoordinate(record.height) !== undefined
-          ? { height: parseNormalizedCoordinate(record.height) }
-          : {}),
+        ...(spatial ? { x: spatial.x, y: spatial.y, width: spatial.width, height: spatial.height } : {}),
         ...(parsePoint(record.from) ? { from: parsePoint(record.from) } : {}),
         ...(parsePoint(record.to) ? { to: parsePoint(record.to) } : {}),
         ...(points && points.length >= 2 ? { points } : {}),
@@ -822,7 +829,7 @@ function parseGuidanceOverlays(raw: unknown): VisualGuidanceOverlay[] {
     .filter((item): item is VisualGuidanceOverlay => item !== null);
 }
 
-function parseGuidanceCards(raw: unknown): VisualGuidanceCard[] {
+function parseGuidanceCards(raw: unknown, options?: VoiceResponseParseOptions): VisualGuidanceCard[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -841,7 +848,9 @@ function parseGuidanceCards(raw: unknown): VisualGuidanceCard[] {
 
       const id = cleanString(record.id) || `card-${index + 1}`;
       const body = cleanString(record.body);
-      const imageId = cleanString(record.image_id);
+      const imageId = resolveImageId(record.image_id, options);
+      if (requiresImageId(options) && !imageId) return null;
+
       const status = cleanString(record.status);
       const stepNumber =
         typeof record.step_number === 'number' && Number.isInteger(record.step_number)
@@ -862,7 +871,7 @@ function parseGuidanceCards(raw: unknown): VisualGuidanceCard[] {
     .filter((item): item is VisualGuidanceCard => item !== null);
 }
 
-function parseGuidanceDifferences(raw: unknown): VisualGuidanceDifference[] {
+function parseGuidanceDifferences(raw: unknown, options?: VoiceResponseParseOptions): VisualGuidanceDifference[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -875,7 +884,9 @@ function parseGuidanceDifferences(raw: unknown): VisualGuidanceDifference[] {
       if (!title) return null;
 
       const id = cleanString(record.id) || `difference-${index + 1}`;
-      const imageId = cleanString(record.image_id);
+      const imageId = resolveImageId(record.image_id, options);
+      if (requiresImageId(options) && !imageId) return null;
+
       const detail = cleanString(record.detail);
       const severity = cleanString(record.severity);
 
@@ -891,14 +902,17 @@ function parseGuidanceDifferences(raw: unknown): VisualGuidanceDifference[] {
     .filter((item): item is VisualGuidanceDifference => item !== null);
 }
 
-export function parseVisualGuidance(raw: unknown): VisualGuidanceResponse | null {
+export function parseVisualGuidance(
+  raw: unknown,
+  options?: VoiceResponseParseOptions,
+): VisualGuidanceResponse | null {
   const record = asRecord(raw);
   if (!record) return null;
 
-  const sceneItems = parseGuidanceSceneItems(record.scene_items);
-  const overlays = parseGuidanceOverlays(record.overlays);
-  const cards = parseGuidanceCards(record.cards);
-  const differences = parseGuidanceDifferences(record.differences);
+  const sceneItems = parseGuidanceSceneItems(record.scene_items, options);
+  const overlays = parseGuidanceOverlays(record.overlays, options);
+  const cards = parseGuidanceCards(record.cards, options);
+  const differences = parseGuidanceDifferences(record.differences, options);
   const currentState = cleanString(record.current_state);
   const nextTargetState = cleanString(record.next_target_state);
   const primaryImageId = cleanString(record.primary_image_id);
@@ -1053,7 +1067,7 @@ export function parseLiveGuide(raw: unknown): LiveGuideResponse | null {
   };
 }
 
-function parsePhysicalTask(raw: unknown): PhysicalTaskResponse | null {
+function parsePhysicalTask(raw: unknown, options?: VoiceResponseParseOptions): PhysicalTaskResponse | null {
   const record = asRecord(raw);
   if (!record) return null;
 
@@ -1062,7 +1076,7 @@ function parsePhysicalTask(raw: unknown): PhysicalTaskResponse | null {
   const nextActions = parseNextActions(record.next_actions);
   const safetyNotes = parseSafetyNotes(record.safety_notes);
   const followUpSuggestions = parseFollowUpSuggestions(record.follow_up_suggestions);
-  const visualAnnotations = parseVisualAnnotations(record.visual_annotations);
+  const visualAnnotations = parseVisualAnnotations(record.visual_annotations, options);
 
   const hasContent =
     taskState ||
@@ -1105,11 +1119,14 @@ function parseJsonResponse(raw: string): unknown {
   }
 }
 
-function buildVoiceResponsePayload(record: Record<string, unknown>): VoiceResponsePayload {
+function buildVoiceResponsePayload(
+  record: Record<string, unknown>,
+  options?: VoiceResponseParseOptions,
+): VoiceResponsePayload {
   const charts = parseCharts(record.charts);
   const visualImageGroups = parseVisualImageGroupRequests(record.visual_image_groups);
-  const physicalTask = parsePhysicalTask(record.physical_task);
-  const visualGuidance = parseVisualGuidance(record.visual_guidance);
+  const physicalTask = parsePhysicalTask(record.physical_task, options);
+  const visualGuidance = parseVisualGuidance(record.visual_guidance, options);
   const liveGuide = parseLiveGuide(record.live_guide);
 
   return {
@@ -1131,7 +1148,10 @@ function buildVoiceResponsePayload(record: Record<string, unknown>): VoiceRespon
   };
 }
 
-export function parseVoiceResponsePayloadWithRaw(raw: string): {
+export function parseVoiceResponsePayloadWithRaw(
+  raw: string,
+  options?: VoiceResponseParseOptions,
+): {
   payload: VoiceResponsePayload;
   rawRecord: Record<string, unknown>;
 } {
@@ -1149,13 +1169,16 @@ export function parseVoiceResponsePayloadWithRaw(raw: string): {
 
   const rawRecord = parsed as Record<string, unknown>;
   return {
-    payload: buildVoiceResponsePayload(rawRecord),
+    payload: buildVoiceResponsePayload(rawRecord, options),
     rawRecord,
   };
 }
 
-export function parseVoiceResponsePayload(raw: string): VoiceResponsePayload {
-  return parseVoiceResponsePayloadWithRaw(raw).payload;
+export function parseVoiceResponsePayload(
+  raw: string,
+  options?: VoiceResponseParseOptions,
+): VoiceResponsePayload {
+  return parseVoiceResponsePayloadWithRaw(raw, options).payload;
 }
 
 export { normalizeExplanationMarkdown, sanitizeExplanationText } from '@/lib/format/explanation-markdown';

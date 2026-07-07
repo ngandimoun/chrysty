@@ -190,6 +190,36 @@ export function VisualGuidanceGallery({
                     </motion.div>
                   );
                 })}
+
+                {imageOverlays
+                  .filter((overlay) => overlay.label && overlay.type !== 'line' && overlay.type !== 'path')
+                  .map((overlay, index) => {
+                    const anchorX =
+                      overlay.x !== undefined
+                        ? (overlay.x ?? 0) + (overlay.width ?? 0) / 2
+                        : overlay.from?.x ?? 0.5;
+                    const anchorY =
+                      overlay.y !== undefined
+                        ? overlay.y ?? 0
+                        : overlay.from?.y ?? 0.5;
+
+                    return (
+                      <motion.div
+                        key={`${overlay.id}-label`}
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: Math.min(index * 0.04 + 0.08, 0.5) }}
+                        className="absolute max-w-[42%] truncate rounded-full border border-cyan-200/30 bg-slate-950/85 px-2 py-0.5 text-[0.62rem] font-medium text-cyan-50 shadow-md backdrop-blur"
+                        style={{
+                          left: pct(anchorX),
+                          top: pct(Math.max(anchorY - 0.03, 0.02)),
+                          transform: 'translate(-50%, -100%)',
+                        }}
+                      >
+                        {overlay.label}
+                      </motion.div>
+                    );
+                  })}
               </div>
 
               <div className="space-y-2 p-3">
