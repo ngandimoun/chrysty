@@ -88,9 +88,10 @@ function buildVisualGuidanceFromPhysicalTask(
     .map((annotation, index) => {
       const itemId = `physical-item-${index + 1}`;
       const imageId = annotation.image_id ?? defaultImageId;
+      const displayNumber = annotation.display_number ?? index + 1;
       return {
         item_id: itemId,
-        display_number: index + 1,
+        display_number: displayNumber,
         name: annotation.label,
         image_id: imageId,
         point: { x: annotation.x ?? 0.5, y: annotation.y ?? 0.5 },
@@ -579,6 +580,13 @@ export async function POST(request: Request) {
           const guidanceMode = payload.guidance_mode;
 
           if (liveGuide || guidanceMode !== 'static') {
+            if (shouldDebugResponseStream()) {
+              console.debug('[respond-stream] live_guide', {
+                guidanceMode,
+                directiveCount: liveGuide?.directives.length ?? 0,
+                monitor: isMonitorTurn,
+              });
+            }
             controller.enqueue(
               encoder.encode(
                 encodeSseEvent('live_guide', {

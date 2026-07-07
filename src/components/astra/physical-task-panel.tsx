@@ -125,7 +125,7 @@ export function PhysicalTaskPanel({ task }: PhysicalTaskPanelProps) {
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-[0.75rem] text-foreground"
               >
                 <span className="grid size-4 place-items-center rounded-full bg-primary text-[0.6rem] font-bold text-primary-foreground">
-                  {index + 1}
+                  {annotation.display_number ?? index + 1}
                 </span>
                 {annotation.label}
               </span>

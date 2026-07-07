@@ -172,6 +172,7 @@ export function useLiveGuide({
     }
 
     watchTurnCountRef.current = 0;
+    activeRef.current = true;
     setActive(true);
   }, []);
 
@@ -183,6 +184,7 @@ export function useLiveGuide({
 
     persistTaskMemory();
     stopTracker();
+    activeRef.current = false;
     setActive(false);
     setDirectives([]);
     setCoachingNote(null);
@@ -242,6 +244,10 @@ export function useLiveGuide({
 
       const liveGuide = update.liveGuide;
       if (!liveGuide) return;
+
+      const shouldApply =
+        activeRef.current || update.guidanceMode === 'live_requested';
+      if (!shouldApply) return;
 
       if (liveGuide.task) {
         setTask(liveGuide.task);

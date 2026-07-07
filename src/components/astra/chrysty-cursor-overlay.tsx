@@ -391,6 +391,16 @@ export function ChrystyCursorOverlay({
             >
               {coachingNote}
             </motion.p>
+          ) : directives.length === 0 ? (
+            <motion.p
+              key="live-guide-hint"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="pointer-events-none max-w-[min(92%,20rem)] text-center text-xs font-medium leading-snug text-cyan-100/90"
+            >
+              Live Guide on — speak or point your camera at what you need help with
+            </motion.p>
           ) : null}
         </AnimatePresence>
       </div>

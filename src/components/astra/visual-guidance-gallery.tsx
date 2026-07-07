@@ -151,6 +151,10 @@ export function VisualGuidanceGallery({
                         );
                       }
 
+                      if (overlay.type === 'number') {
+                        return null;
+                      }
+
                       return (
                         <motion.rect
                           key={overlay.id}
@@ -192,7 +196,11 @@ export function VisualGuidanceGallery({
                 })}
 
                 {imageOverlays
-                  .filter((overlay) => overlay.label && overlay.type !== 'line' && overlay.type !== 'path')
+                  .filter(
+                    (overlay) =>
+                      overlay.type === 'number' ||
+                      (overlay.label && overlay.type !== 'line' && overlay.type !== 'path'),
+                  )
                   .map((overlay, index) => {
                     const anchorX =
                       overlay.x !== undefined
@@ -202,6 +210,11 @@ export function VisualGuidanceGallery({
                       overlay.y !== undefined
                         ? overlay.y ?? 0
                         : overlay.from?.y ?? 0.5;
+                    const badgeNumber =
+                      overlay.type === 'number'
+                        ? overlay.sequence ?? (overlay.label ? Number.parseInt(overlay.label, 10) : undefined)
+                        : undefined;
+                    const showBadge = badgeNumber !== undefined && Number.isFinite(badgeNumber);
 
                     return (
                       <motion.div
@@ -209,14 +222,21 @@ export function VisualGuidanceGallery({
                         initial={{ opacity: 0, y: 4 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: Math.min(index * 0.04 + 0.08, 0.5) }}
-                        className="absolute max-w-[42%] truncate rounded-full border border-cyan-200/30 bg-slate-950/85 px-2 py-0.5 text-[0.62rem] font-medium text-cyan-50 shadow-md backdrop-blur"
+                        className="absolute flex max-w-[42%] items-center gap-1 rounded-full border border-cyan-200/30 bg-slate-950/85 px-1.5 py-0.5 text-[0.62rem] font-medium text-cyan-50 shadow-md backdrop-blur"
                         style={{
                           left: pct(anchorX),
                           top: pct(Math.max(anchorY - 0.03, 0.02)),
                           transform: 'translate(-50%, -100%)',
                         }}
                       >
-                        {overlay.label}
+                        {showBadge ? (
+                          <span className="grid size-5 shrink-0 place-items-center rounded-full bg-cyan-300 text-[0.65rem] font-bold text-slate-950">
+                            {badgeNumber}
+                          </span>
+                        ) : null}
+                        {overlay.label && overlay.type !== 'number' ? (
+                          <span className="truncate px-0.5">{overlay.label}</span>
+                        ) : null}
                       </motion.div>
                     );
                   })}

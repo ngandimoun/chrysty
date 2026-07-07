@@ -71,6 +71,9 @@ export function AstraVoiceShell() {
   const [cameraContentDims, setCameraContentDims] = useState<{ width: number; height: number } | null>(
     null,
   );
+  const [liveGuideFrameDims, setLiveGuideFrameDims] = useState<{ width: number; height: number } | null>(
+    null,
+  );
 
   const audioTrackRef = useRef<LocalAudioTrack | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -263,10 +266,22 @@ export function AstraVoiceShell() {
     if (liveGuideActive && visuals.length > 0) {
       const first = visuals[0];
       // The anchor tracker needs the exact frame the model reasoned about.
-      noteLiveGuideFrame({ blob: first.blob, width: first.width, height: first.height });
+      const frameDims = { width: first.width, height: first.height };
+      noteLiveGuideFrame({ blob: first.blob, ...frameDims });
+      if (frameDims.width > 0 && frameDims.height > 0) {
+        setLiveGuideFrameDims(frameDims);
+      }
     }
     return visuals;
   }, [getVisualCapture, liveGuideActive, noteLiveGuideFrame]);
+
+  useEffect(() => {
+    if (!liveGuideActive) {
+      setLiveGuideFrameDims(null);
+    }
+  }, [liveGuideActive]);
+
+  const cursorContentDimensions = cameraContentDims ?? liveGuideFrameDims;
 
   const {
     documents,
@@ -920,7 +935,7 @@ export function AstraVoiceShell() {
             <ChrystyCursorOverlay
               directives={liveGuide.directives}
               tracking={liveGuide.tracking}
-              contentDimensions={cameraContentDims}
+              contentDimensions={cursorContentDimensions}
               mirrored={cameraFacing === 'user'}
               coachingNote={liveGuide.coachingNote}
               watchMeEnabled={liveGuide.watchMeEnabled}

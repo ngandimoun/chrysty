@@ -105,6 +105,7 @@ export interface PhysicalSafetyNote {
 
 export interface PhysicalVisualAnnotation {
   label: string;
+  display_number?: number;
   image_id?: string;
   x?: number;
   y?: number;
@@ -657,10 +658,106 @@ function parseSpatialBbox(record: Record<string, unknown>): { x: number; y: numb
   return parseBox2d(record.box_2d) ?? parseLegacyBbox(record);
 }
 
+function parseDisplayNumber(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return undefined;
+  return Math.min(Math.max(raw, 1), 99);
+}
+
+/** Fills missing display_number on scene items, grouped by image_id. */
+function assignSceneItemDisplayNumbers(items: VisualGuidanceSceneItem[]): VisualGuidanceSceneItem[] {
+  const groups = new Map<string, VisualGuidanceSceneItem[]>();
+
+  for (const item of items) {
+    const key = item.image_id ?? '__default__';
+    const group = groups.get(key) ?? [];
+    group.push(item);
+    groups.set(key, group);
+  }
+
+  const result: VisualGuidanceSceneItem[] = [];
+
+  for (const group of groups.values()) {
+    const used = new Set(
+      group.map((item) => item.display_number).filter((n): n is number => n !== undefined),
+    );
+    let next = 1;
+
+    for (const item of group) {
+      if (item.display_number !== undefined) {
+        result.push(item);
+        continue;
+      }
+
+      while (used.has(next) && next <= 99) {
+        next += 1;
+      }
+
+      const display_number = next <= 99 ? next : undefined;
+      if (display_number !== undefined) {
+        used.add(display_number);
+        next += 1;
+      }
+
+      result.push({
+        ...item,
+        ...(display_number !== undefined ? { display_number } : {}),
+      });
+    }
+  }
+
+  return result;
+}
+
+function assignAnnotationDisplayNumbers(
+  annotations: PhysicalVisualAnnotation[],
+): PhysicalVisualAnnotation[] {
+  const groups = new Map<string, PhysicalVisualAnnotation[]>();
+
+  for (const annotation of annotations) {
+    const key = annotation.image_id ?? '__default__';
+    const group = groups.get(key) ?? [];
+    group.push(annotation);
+    groups.set(key, group);
+  }
+
+  const result: PhysicalVisualAnnotation[] = [];
+
+  for (const group of groups.values()) {
+    const used = new Set(
+      group.map((item) => item.display_number).filter((n): n is number => n !== undefined),
+    );
+    let next = 1;
+
+    for (const annotation of group) {
+      if (annotation.display_number !== undefined) {
+        result.push(annotation);
+        continue;
+      }
+
+      while (used.has(next) && next <= 99) {
+        next += 1;
+      }
+
+      const display_number = next <= 99 ? next : undefined;
+      if (display_number !== undefined) {
+        used.add(display_number);
+        next += 1;
+      }
+
+      result.push({
+        ...annotation,
+        ...(display_number !== undefined ? { display_number } : {}),
+      });
+    }
+  }
+
+  return result;
+}
+
 function parseVisualAnnotations(raw: unknown, options?: VoiceResponseParseOptions): PhysicalVisualAnnotation[] {
   if (!Array.isArray(raw)) return [];
 
-  return raw
+  const parsed = raw
     .slice(0, 8)
     .map((item) => {
       const record = asRecord(item);
@@ -672,17 +769,21 @@ function parseVisualAnnotations(raw: unknown, options?: VoiceResponseParseOption
       const imageId = resolveImageId(record.image_id, options);
       if (requiresImageId(options) && !imageId) return null;
 
+      const displayNumber = parseDisplayNumber(record.display_number);
       const bbox = parseSpatialBbox(record);
       const confidence = cleanString(record.confidence);
 
       return {
         label,
+        ...(displayNumber !== undefined ? { display_number: displayNumber } : {}),
         ...(imageId ? { image_id: imageId } : {}),
         ...(bbox ? { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height } : {}),
         ...(confidence ? { confidence } : {}),
       } satisfies PhysicalVisualAnnotation;
     })
     .filter((item): item is PhysicalVisualAnnotation => item !== null);
+
+  return assignAnnotationDisplayNumbers(parsed);
 }
 
 function parsePoint(raw: unknown): VisualGuidancePoint | undefined {
@@ -755,10 +856,7 @@ function parseGuidanceSceneItems(raw: unknown, options?: VoiceResponseParseOptio
       if (requiresImageId(options) && !imageId) return null;
 
       const itemId = cleanString(record.item_id) || `item-${index + 1}`;
-      const displayNumber =
-        typeof record.display_number === 'number' && Number.isInteger(record.display_number)
-          ? Math.min(Math.max(record.display_number, 1), 99)
-          : undefined;
+      const displayNumber = parseDisplayNumber(record.display_number);
       const role = cleanString(record.role);
       const confidence = cleanString(record.confidence);
       const bbox = parseGuidanceBbox(record.bbox) ?? parseSpatialBbox(record);
@@ -909,7 +1007,7 @@ export function parseVisualGuidance(
   const record = asRecord(raw);
   if (!record) return null;
 
-  const sceneItems = parseGuidanceSceneItems(record.scene_items, options);
+  const sceneItems = assignSceneItemDisplayNumbers(parseGuidanceSceneItems(record.scene_items, options));
   const overlays = parseGuidanceOverlays(record.overlays, options);
   const cards = parseGuidanceCards(record.cards, options);
   const differences = parseGuidanceDifferences(record.differences, options);

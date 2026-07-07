@@ -340,6 +340,7 @@ Rules:
 - Use precise coordinates only when the attached image makes the location visible and you are confident. If coordinates are uncertain or missing, use cards without misleading arrows instead of guessing.
 - Every scene item, overlay, and image-specific card must include image_id when multiple camera images are attached. Use the image ids listed in the user prompt. When only one image is attached, image_id may be omitted.
 - Use sleek minimal guidance: few important numbered badges, thin outlines, short cards, and no clutter. If many objects are visible, label only what matters for the current goal.
+- Numbered object labels (static / visual_guidance turns only — not Live Guide): when you label visible objects, assign display_number starting at 1 in reading or importance order. scene_items[].name is the object name (e.g. "fork"); display_number is the on-screen badge. In spoken_transcript and explanation_text, refer to objects by their badge number when numbers are shown — e.g. "Number 1 is the fork" / "Pick up item 2 next" (match the user's language). Keep numbers stable for the same object across turns when possible.
 - For ingredients/cooking scenes, number the useful ingredients, create materials/plan/active_step/check cards, and make voice narrate only the next action.
 - For DIY/build scenes, number components and tools, explain roles briefly, and use arrows/paths only for clearly visible connect/move/place steps.
 - For broken/damaged objects, prioritize mistake/difference/safety cards and spotlight or warning overlays around visible problem areas.
@@ -392,8 +393,9 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
     blocks.push(`Live Guide mode rules (active this turn):
 - You are guiding the user in real time on their live camera with voice plus an on-screen Chrysty cursor. Stay domain-free: infer the actual task (any sport, repair, kitchen, DIY, or other physical work) from the user and the frame.
 - The attached camera frame is the CURRENT state of the scene. Base every directive on what is visible in it right now, and continue from what the user already did.
-- spoken_transcript narrates only the current action: what to do, where (referencing your pointer/path), and one check or reason. Keep it natural and short; the cursor shows the "where" so you do not need to describe positions verbally in detail.
-- Return few, reliable directives. One pointer plus at most one path/region beats five uncertain marks. If the camera angle makes a location uncertain, say what better angle you need instead of guessing coordinates.
+- live_guide is REQUIRED every Live Guide turn. When giving spatial guidance, return at least one pointer directive with reliable points on the frame. If the angle is too unclear, set coaching_note asking for a better angle — do not omit live_guide or return empty directives without explanation.
+- spoken_transcript narrates only the current action: what to do, where (referencing pointer/path by step number), and one check or reason. Say "number 1" / "step 2" when sequence is set on directives (match user language). Keep it natural and short; the cursor shows the "where".
+- Return few, reliable directives. One pointer plus at most one path/region beats five uncertain marks. Set sequence (1, 2, 3…) on directives for multi-step actions.
 - Always update live_guide.task (name, stage, progress) so the session stays coherent across turns.
 - Set needs_visual_explanation=false in Live Guide mode unless the user explicitly asks for something to read; the camera view is the workspace.
 - For monitoring turns, respond with interjection.should_speak=false and an empty spoken_transcript unless intervention genuinely helps.`);
