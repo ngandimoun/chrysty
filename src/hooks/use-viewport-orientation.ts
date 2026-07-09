@@ -46,12 +46,33 @@ function readViewportSize(): { width: number; height: number } {
   };
 }
 
+export function readIsLandscape(width?: number, height?: number): boolean {
+  const angle = readOrientationAngle();
+  const normalizedAngle = ((angle % 360) + 360) % 360;
+
+  if (normalizedAngle === 90 || normalizedAngle === 270) {
+    return true;
+  }
+
+  if (normalizedAngle === 0 || normalizedAngle === 180) {
+    return false;
+  }
+
+  if (typeof window !== 'undefined' && window.matchMedia('(orientation: landscape)').matches) {
+    return true;
+  }
+
+  const viewportWidth = width ?? readViewportSize().width;
+  const viewportHeight = height ?? readViewportSize().height;
+  return viewportWidth > viewportHeight;
+}
+
 function readViewportOrientation(): ViewportOrientation {
   const { width, height } = readViewportSize();
   const orientationAngle = readOrientationAngle();
 
   return {
-    isLandscape: width > height,
+    isLandscape: readIsLandscape(width, height),
     orientationAngle,
     viewportWidth: width,
     viewportHeight: height,

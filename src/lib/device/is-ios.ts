@@ -18,6 +18,11 @@ export function isPhoneSizedDevice(viewportWidth: number, viewportHeight: number
   return Math.min(viewportWidth, viewportHeight) < 600;
 }
 
+export function isTabletDevice(viewportWidth: number, viewportHeight: number): boolean {
+  if (!isIOSDevice()) return false;
+  return Math.min(viewportWidth, viewportHeight) >= 600;
+}
+
 export function preferMobileShader(): boolean {
   return isIOSDevice() || isCoarsePointer();
 }

@@ -43,6 +43,7 @@ export function getAspectRatioShellClass(ratio: CameraAspectRatio): string {
 export interface OrientationAwareShellOptions {
   isLandscape: boolean;
   isCoarsePointer: boolean;
+  isTablet?: boolean;
   userAspectRatio: CameraAspectRatio;
 }
 
@@ -51,6 +52,14 @@ export function getLegacyShellClass(userAspectRatio: CameraAspectRatio): string 
     'w-[min(98vw,64rem)]',
     getAspectRatioShellClass(userAspectRatio),
     'max-h-[min(70dvh,52rem)]',
+  );
+}
+
+function getLandscapeShellClass(userAspectRatio: CameraAspectRatio): string {
+  return cnShell(
+    'w-full max-w-none',
+    getAspectRatioShellClass(userAspectRatio),
+    'max-h-[92dvh]',
   );
 }
 
@@ -64,11 +73,7 @@ export function getOrientationAwareShellClass({
   }
 
   if (isCoarsePointer) {
-    return cnShell(
-      'w-full max-w-none',
-      getAspectRatioShellClass(userAspectRatio),
-      'max-h-[min(92dvh,calc(100vw*9/16))]',
-    );
+    return getLandscapeShellClass(userAspectRatio);
   }
 
   return getLegacyShellClass(userAspectRatio);

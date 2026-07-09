@@ -25,6 +25,7 @@ import {
   getOrientationAwareShellClass,
 } from '@/lib/camera/aspect-ratio';
 import type { NumericRange } from '@/lib/camera/track-controls';
+import { isTabletDevice } from '@/lib/device/is-ios';
 import { MAX_PENDING_PHOTOS, type CameraAspectRatio, type CameraTimerSeconds, type FocusAnnotation } from '@/lib/camera/types';
 import { cn } from '@/lib/utils';
 
@@ -103,10 +104,12 @@ export function CameraPreview({
   const showTopTools = canFlipCamera || canUseTorch;
   const controlsLocked = controlsDisabled || countdown !== null;
   const previewAspect = viewportHeight > 0 ? viewportWidth / viewportHeight : 1;
+  const isTablet = isTabletDevice(viewportWidth, viewportHeight);
   const useMobileLandscapeLayout = isCoarsePointer && isLandscape;
   const shellClass = getOrientationAwareShellClass({
     isLandscape,
     isCoarsePointer,
+    isTablet,
     userAspectRatio: aspectRatio,
   });
 
