@@ -46,22 +46,32 @@ export interface OrientationAwareShellOptions {
   userAspectRatio: CameraAspectRatio;
 }
 
+export function getLegacyShellClass(userAspectRatio: CameraAspectRatio): string {
+  return cnShell(
+    'w-[min(98vw,64rem)]',
+    getAspectRatioShellClass(userAspectRatio),
+    'max-h-[min(70dvh,52rem)]',
+  );
+}
+
 export function getOrientationAwareShellClass({
   isLandscape,
   isCoarsePointer,
   userAspectRatio,
 }: OrientationAwareShellOptions): string {
-  const aspectClass = getAspectRatioShellClass(userAspectRatio);
-
-  if (isCoarsePointer) {
-    if (isLandscape) {
-      return cnShell('w-full max-w-none', aspectClass, 'max-h-[min(92dvh,calc(100vw*9/16))]');
-    }
-
-    return cnShell('w-full max-w-none', aspectClass, 'max-h-[min(82dvh,calc(100vw*4/3))]');
+  if (!isLandscape) {
+    return getLegacyShellClass(userAspectRatio);
   }
 
-  return cnShell('w-[min(98vw,64rem)]', aspectClass, 'max-h-[min(75dvh,52rem)]');
+  if (isCoarsePointer) {
+    return cnShell(
+      'w-full max-w-none',
+      getAspectRatioShellClass(userAspectRatio),
+      'max-h-[min(92dvh,calc(100vw*9/16))]',
+    );
+  }
+
+  return getLegacyShellClass(userAspectRatio);
 }
 
 function cnShell(...parts: string[]): string {

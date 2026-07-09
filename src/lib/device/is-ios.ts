@@ -13,6 +13,11 @@ export function isCoarsePointer(): boolean {
   return window.matchMedia('(pointer: coarse)').matches;
 }
 
+export function isPhoneSizedDevice(viewportWidth: number, viewportHeight: number): boolean {
+  if (!isIOSDevice()) return false;
+  return Math.min(viewportWidth, viewportHeight) < 600;
+}
+
 export function preferMobileShader(): boolean {
   return isIOSDevice() || isCoarsePointer();
 }

@@ -33,6 +33,7 @@ import type {
 import { CameraError, MAX_PENDING_PHOTOS } from '@/lib/camera/types';
 import { createUuid } from '@/lib/ids';
 import { useViewportOrientation } from '@/hooks/use-viewport-orientation';
+import { isPhoneSizedDevice } from '@/lib/device/is-ios';
 
 interface UseCameraResult {
   stream: MediaStream | null;
@@ -94,7 +95,7 @@ export function useCamera(): UseCameraResult {
   const prevLandscapeRef = useRef(false);
   const orientationRefreshTimerRef = useRef<number | null>(null);
 
-  const { isLandscape } = useViewportOrientation();
+  const { isLandscape, viewportWidth, viewportHeight } = useViewportOrientation();
 
   useEffect(() => {
     pendingPhotosRef.current = pendingPhotos;
@@ -293,6 +294,10 @@ export function useCamera(): UseCameraResult {
 
     prevLandscapeRef.current = isLandscape;
 
+    if (!isPhoneSizedDevice(viewportWidth, viewportHeight)) {
+      return;
+    }
+
     if (orientationRefreshTimerRef.current !== null) {
       window.clearTimeout(orientationRefreshTimerRef.current);
     }
@@ -323,7 +328,7 @@ export function useCamera(): UseCameraResult {
         orientationRefreshTimerRef.current = null;
       }
     };
-  }, [attachStream, getStreamOptions, isLandscape, turnOffTorch]);
+  }, [attachStream, getStreamOptions, isLandscape, turnOffTorch, viewportHeight, viewportWidth]);
 
   const toggleTorch = useCallback(async () => {
     const track = getVideoTrack(streamRef.current);
