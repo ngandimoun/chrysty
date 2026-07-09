@@ -10,18 +10,24 @@ interface RetainedBestFrame {
   prepared: PreparedImageForModel;
 }
 
+interface FrameBufferOptions {
+  getDigitalScale?: () => number;
+}
+
 export class FrameBuffer {
   private scores: FrameScore[] = [];
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private video: HTMLVideoElement | null = null;
   private bestRetained: RetainedBestFrame | null = null;
   private sampleInFlight = false;
+  private getDigitalScale: () => number = () => 1;
 
-  start(video: HTMLVideoElement): void {
+  start(video: HTMLVideoElement, options: FrameBufferOptions = {}): void {
     this.stop();
     this.video = video;
     this.scores = [];
     this.bestRetained = null;
+    this.getDigitalScale = options.getDigitalScale ?? (() => 1);
 
     this.intervalId = setInterval(() => {
       void this.sampleScore();
@@ -67,7 +73,9 @@ export class FrameBuffer {
     ) {
       prepared = this.bestRetained.prepared;
     } else {
-      prepared = await prepareVideoFrameForModel(video);
+      prepared = await prepareVideoFrameForModel(video, {
+        digitalScale: this.getDigitalScale(),
+      });
     }
 
     this.bestRetained = null;
@@ -96,7 +104,9 @@ export class FrameBuffer {
       return;
     }
 
-    const prepared = await prepareVideoFrameForModel(video);
+    const prepared = await prepareVideoFrameForModel(video, {
+      digitalScale: this.getDigitalScale(),
+    });
     if (!prepared) return;
 
     this.bestRetained = { score, prepared };

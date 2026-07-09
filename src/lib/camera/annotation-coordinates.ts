@@ -1,4 +1,5 @@
 import type { FocusAnnotation } from '@/lib/camera/types';
+import { mapPreviewPointToImage } from '@/lib/camera/object-cover';
 
 interface Size {
   width: number;
@@ -33,8 +34,28 @@ function flipAnnotationHorizontally(annotation: FocusAnnotation): FocusAnnotatio
   };
 }
 
-function mapPointToImage(point: number, previewLength: number, offset: number, renderedLength: number) {
-  return (point * previewLength - offset) / renderedLength;
+function mapPointToImage(
+  point: number,
+  previewLength: number,
+  offset: number,
+  renderedLength: number,
+  previewCenter: number,
+  digitalScale: number,
+) {
+  const pixel = point * previewLength;
+  const unscaled =
+    digitalScale === 1 ? pixel : (pixel - previewCenter) / digitalScale + previewCenter;
+  return (unscaled - offset) / renderedLength;
+}
+
+function mapPreviewCoordToImage(
+  previewX: number,
+  previewY: number,
+  preview: Size,
+  image: Size,
+  digitalScale: number,
+): { x: number; y: number } {
+  return mapPreviewPointToImage(previewX, previewY, preview, image, digitalScale);
 }
 
 function hasImageArea(annotation: FocusAnnotation): boolean {
@@ -56,6 +77,7 @@ export function mapObjectCoverAnnotationsToImage(
   preview: Size,
   image: Size,
   mirrored = false,
+  digitalScale = 1,
 ): FocusAnnotation[] {
   if (
     annotations.length === 0 ||
@@ -72,30 +94,90 @@ export function mapObjectCoverAnnotationsToImage(
   const renderedHeight = image.height * scale;
   const offsetX = (preview.width - renderedWidth) / 2;
   const offsetY = (preview.height - renderedHeight) / 2;
+  const centerX = preview.width / 2;
+  const centerY = preview.height / 2;
 
   return annotations
     .map((annotation) => {
-      const imageX = mapPointToImage(annotation.x, preview.width, offsetX, renderedWidth);
-      const imageY = mapPointToImage(annotation.y, preview.height, offsetY, renderedHeight);
-      const imageWidth = (annotation.width * preview.width) / renderedWidth;
-      const imageHeight = (annotation.height * preview.height) / renderedHeight;
+      const topLeft = mapPreviewCoordToImage(annotation.x, annotation.y, preview, image, digitalScale);
+      const bottomRight = mapPreviewCoordToImage(
+        annotation.x + annotation.width,
+        annotation.y + annotation.height,
+        preview,
+        image,
+        digitalScale,
+      );
+      const imageWidth = bottomRight.x - topLeft.x;
+      const imageHeight = bottomRight.y - topLeft.y;
       const mapped = normalizeAnnotation({
         ...annotation,
-        x: imageX,
-        y: imageY,
+        x: topLeft.x,
+        y: topLeft.y,
         width: imageWidth,
         height: imageHeight,
         ...(annotation.startX !== undefined
-          ? { startX: clamp(mapPointToImage(annotation.startX, preview.width, offsetX, renderedWidth), 0, 1) }
+          ? {
+              startX: clamp(
+                mapPointToImage(
+                  annotation.startX,
+                  preview.width,
+                  offsetX,
+                  renderedWidth,
+                  centerX,
+                  digitalScale,
+                ),
+                0,
+                1,
+              ),
+            }
           : {}),
         ...(annotation.startY !== undefined
-          ? { startY: clamp(mapPointToImage(annotation.startY, preview.height, offsetY, renderedHeight), 0, 1) }
+          ? {
+              startY: clamp(
+                mapPointToImage(
+                  annotation.startY,
+                  preview.height,
+                  offsetY,
+                  renderedHeight,
+                  centerY,
+                  digitalScale,
+                ),
+                0,
+                1,
+              ),
+            }
           : {}),
         ...(annotation.endX !== undefined
-          ? { endX: clamp(mapPointToImage(annotation.endX, preview.width, offsetX, renderedWidth), 0, 1) }
+          ? {
+              endX: clamp(
+                mapPointToImage(
+                  annotation.endX,
+                  preview.width,
+                  offsetX,
+                  renderedWidth,
+                  centerX,
+                  digitalScale,
+                ),
+                0,
+                1,
+              ),
+            }
           : {}),
         ...(annotation.endY !== undefined
-          ? { endY: clamp(mapPointToImage(annotation.endY, preview.height, offsetY, renderedHeight), 0, 1) }
+          ? {
+              endY: clamp(
+                mapPointToImage(
+                  annotation.endY,
+                  preview.height,
+                  offsetY,
+                  renderedHeight,
+                  centerY,
+                  digitalScale,
+                ),
+                0,
+                1,
+              ),
+            }
           : {}),
       });
 

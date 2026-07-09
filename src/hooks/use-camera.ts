@@ -31,6 +31,14 @@ import type {
   PendingPhoto,
 } from '@/lib/camera/types';
 import { CameraError, MAX_PENDING_PHOTOS } from '@/lib/camera/types';
+import {
+  canAdjustZoom,
+  getEffectiveZoomRange,
+  getHardwareZoomRange,
+  resolveDefaultZoom,
+  splitZoom,
+  type HardwareZoomRange,
+} from '@/lib/camera/zoom-model';
 import { createUuid } from '@/lib/ids';
 import { useViewportOrientation } from '@/hooks/use-viewport-orientation';
 import { isPhoneSizedDevice } from '@/lib/device/is-ios';
@@ -44,6 +52,7 @@ interface UseCameraResult {
   torchOn: boolean;
   canUseTorch: boolean;
   zoom: number;
+  digitalScale: number;
   zoomRange: NumericRange | null;
   canZoom: boolean;
   exposureCompensation: number;
@@ -77,6 +86,7 @@ export function useCamera(): UseCameraResult {
   const [torchOn, setTorchOn] = useState(false);
   const [canUseTorch, setCanUseTorch] = useState(false);
   const [zoom, setZoomState] = useState(1);
+  const [digitalScale, setDigitalScale] = useState(1);
   const [zoomRange, setZoomRange] = useState<NumericRange | null>(null);
   const [canZoom, setCanZoom] = useState(false);
   const [exposureCompensation, setExposureCompensationState] = useState(0);
@@ -94,6 +104,13 @@ export function useCamera(): UseCameraResult {
   const isLandscapeRef = useRef(false);
   const prevLandscapeRef = useRef(false);
   const orientationRefreshTimerRef = useRef<number | null>(null);
+  const hardwareZoomRangeRef = useRef<HardwareZoomRange>({
+    supported: false,
+    min: 1,
+    max: 1,
+    step: 0.1,
+  });
+  const digitalScaleRef = useRef(1);
 
   const { isLandscape, viewportWidth, viewportHeight } = useViewportOrientation();
 
@@ -117,17 +134,21 @@ export function useCamera(): UseCameraResult {
     setCanUseTorch(supported);
   }, []);
 
+  const applyZoomState = useCallback((displayZoom: number, nextDigitalScale: number) => {
+    digitalScaleRef.current = nextDigitalScale;
+    setDigitalScale(nextDigitalScale);
+    setZoomState(displayZoom);
+  }, []);
+
   const syncTrackCapabilities = useCallback((nextStream: MediaStream) => {
     const track = getVideoTrack(nextStream);
     const zoomState = getZoomState(track);
     const exposureState = getExposureState(track);
+    const hardwareRange = getHardwareZoomRange(zoomState);
 
-    setCanZoom(zoomState.supported);
-    setZoomRange(
-      zoomState.supported
-        ? { min: zoomState.min, max: zoomState.max, step: zoomState.step }
-        : null,
-    );
+    hardwareZoomRangeRef.current = hardwareRange;
+    setCanZoom(canAdjustZoom(hardwareRange));
+    setZoomRange(getEffectiveZoomRange(hardwareRange));
 
     setCanAdjustExposure(exposureState.supported);
     setExposureRange(
@@ -141,26 +162,26 @@ export function useCamera(): UseCameraResult {
 
   const resetZoomToDefault = useCallback(async (nextStream: MediaStream) => {
     const track = getVideoTrack(nextStream);
-    if (!track) {
-      setZoomState(1);
+    const hardwareRange = hardwareZoomRangeRef.current;
+
+    if (!track || !canAdjustZoom(hardwareRange)) {
+      applyZoomState(1, 1);
       return;
     }
 
-    const zoomState = getZoomState(track);
-    if (!zoomState.supported) {
-      setZoomState(1);
-      return;
+    const targetZoom = resolveDefaultZoom(hardwareRange);
+    const split = splitZoom(targetZoom, hardwareRange);
+
+    if (hardwareRange.supported) {
+      try {
+        await applyZoom(track, split.hardwareZoom);
+      } catch {
+        // Keep the current hardware zoom if reset fails.
+      }
     }
 
-    const targetZoom = Math.min(Math.max(1, zoomState.min), zoomState.max);
-
-    try {
-      const nextZoom = await applyZoom(track, targetZoom);
-      setZoomState(nextZoom);
-    } catch {
-      setZoomState(zoomState.current);
-    }
-  }, []);
+    applyZoomState(split.displayZoom, split.digitalScale);
+  }, [applyZoomState]);
 
   const turnOffTorch = useCallback(async (activeStream: MediaStream | null) => {
     if (!torchOnRef.current) return;
@@ -190,7 +211,7 @@ export function useCamera(): UseCameraResult {
     setCanUseTorch(false);
     setCanZoom(false);
     setZoomRange(null);
-    setZoomState(1);
+    applyZoomState(1, 1);
     setCanAdjustExposure(false);
     setExposureRange(null);
     setExposureCompensationState(0);
@@ -198,7 +219,7 @@ export function useCamera(): UseCameraResult {
     releaseVideoStream(activeStream);
     streamRef.current = null;
     setStream(null);
-  }, []);
+  }, [applyZoomState]);
 
   const attachStream = useCallback(
     (nextStream: MediaStream, nextFacing: CameraFacing) => {
@@ -348,18 +369,24 @@ export function useCamera(): UseCameraResult {
   }, []);
 
   const setZoom = useCallback(async (value: number) => {
-    const track = getVideoTrack(streamRef.current);
-    if (!track || !getZoomState(track).supported) {
+    const hardwareRange = hardwareZoomRangeRef.current;
+    if (!canAdjustZoom(hardwareRange)) {
       throw new CameraError('not-supported', 'Zoom is not available on this device.');
     }
 
-    try {
-      const nextZoom = await applyZoom(track, value);
-      setZoomState(nextZoom);
-    } catch {
-      throw new CameraError('not-supported', 'Zoom is not available on this device.');
+    const split = splitZoom(value, hardwareRange);
+    const track = getVideoTrack(streamRef.current);
+
+    if (hardwareRange.supported && track) {
+      try {
+        await applyZoom(track, split.hardwareZoom);
+      } catch {
+        throw new CameraError('not-supported', 'Zoom is not available on this device.');
+      }
     }
-  }, []);
+
+    applyZoomState(split.displayZoom, split.digitalScale);
+  }, [applyZoomState]);
 
   const setExposureCompensation = useCallback(async (value: number) => {
     const track = getVideoTrack(streamRef.current);
@@ -407,7 +434,9 @@ export function useCamera(): UseCameraResult {
       throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
     }
 
-    const prepared = await prepareVideoFrameForModel(video);
+    const prepared = await prepareVideoFrameForModel(video, {
+      digitalScale: digitalScaleRef.current,
+    });
     if (!prepared) {
       throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
     }
@@ -451,7 +480,9 @@ export function useCamera(): UseCameraResult {
   }, []);
 
   const startFrameSampling = useCallback((video: HTMLVideoElement) => {
-    frameBufferRef.current.start(video);
+    frameBufferRef.current.start(video, {
+      getDigitalScale: () => digitalScaleRef.current,
+    });
   }, []);
 
   const stopFrameSamplingAndPickBest = useCallback(async (): Promise<CapturedFrame | null> => {
@@ -477,6 +508,7 @@ export function useCamera(): UseCameraResult {
     torchOn,
     canUseTorch,
     zoom,
+    digitalScale,
     zoomRange,
     canZoom,
     exposureCompensation,

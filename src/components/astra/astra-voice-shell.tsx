@@ -108,6 +108,7 @@ export function AstraVoiceShell() {
     torchOn,
     canUseTorch,
     zoom,
+    digitalScale,
     zoomRange,
     canZoom,
     exposureCompensation,
@@ -133,10 +134,18 @@ export function AstraVoiceShell() {
     consumePendingPhotos,
   } = useCamera();
 
+  const cameraDigitalScaleRef = useRef(1);
+
+  useEffect(() => {
+    cameraDigitalScaleRef.current = digitalScale;
+  }, [digitalScale]);
+
   const getCameraVideo = useCallback(() => cameraVideoRef.current, []);
+  const getCameraDigitalScale = useCallback(() => cameraDigitalScaleRef.current, []);
 
   const liveGuide = useLiveGuide({
     getVideo: getCameraVideo,
+    getDigitalScale: getCameraDigitalScale,
     cameraActive,
     openCamera,
     sendMonitorTurn: (capture) => monitorSenderRef.current(capture),
@@ -177,12 +186,14 @@ export function AstraVoiceShell() {
       return [];
     }
 
-    const bounds = video.getBoundingClientRect();
+    const shell = video.parentElement;
+    const bounds = shell?.getBoundingClientRect() ?? video.getBoundingClientRect();
     return mapObjectCoverAnnotationsToImage(
       annotations,
       { width: bounds.width, height: bounds.height },
       { width: video.videoWidth, height: video.videoHeight },
       cameraFacingRef.current === 'user',
+      cameraDigitalScaleRef.current,
     );
   }, []);
 
@@ -923,6 +934,7 @@ export function AstraVoiceShell() {
           canUseTorch={canUseTorch}
           torchOn={torchOn}
           zoom={zoom}
+          digitalScale={digitalScale}
           zoomRange={zoomRange}
           canZoom={canZoom}
           exposureCompensation={exposureCompensation}

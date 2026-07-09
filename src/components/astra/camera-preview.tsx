@@ -42,6 +42,7 @@ interface CameraPreviewProps {
   canUseTorch?: boolean;
   torchOn?: boolean;
   zoom?: number;
+  digitalScale?: number;
   zoomRange?: NumericRange | null;
   canZoom?: boolean;
   exposureCompensation?: number;
@@ -72,6 +73,7 @@ export function CameraPreview({
   canUseTorch = false,
   torchOn = false,
   zoom = 1,
+  digitalScale = 1,
   zoomRange = null,
   canZoom = false,
   exposureCompensation = 0,
@@ -228,6 +230,14 @@ export function CameraPreview({
     onAspectRatioChange?.(nextRatio);
   }, [aspectRatio, onAspectRatioChange]);
 
+  const mirrorPreview = facing === 'user';
+  const hasDigitalDezoom = digitalScale < 1;
+  const videoTransform = hasDigitalDezoom
+    ? mirrorPreview
+      ? `scaleX(-1) scale(${digitalScale})`
+      : `scale(${digitalScale})`
+    : undefined;
+
   return (
     <div
       ref={shellRef}
@@ -240,7 +250,12 @@ export function CameraPreview({
         autoPlay
         playsInline
         muted
-        className={cn('size-full object-cover', facing === 'user' ? 'scale-x-[-1]' : '')}
+        className={cn(
+          'size-full object-cover',
+          mirrorPreview && !hasDigitalDezoom ? 'scale-x-[-1]' : '',
+          hasDigitalDezoom ? 'origin-center' : '',
+        )}
+        style={videoTransform ? { transform: videoTransform } : undefined}
         aria-label="Live camera preview"
       />
 

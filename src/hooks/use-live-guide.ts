@@ -29,6 +29,7 @@ export interface LiveGuideReferenceFrame {
 
 interface UseLiveGuideOptions {
   getVideo: () => HTMLVideoElement | null;
+  getDigitalScale?: () => number;
   cameraActive: boolean;
   openCamera: () => Promise<void>;
   sendMonitorTurn: (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>;
@@ -89,6 +90,7 @@ function sleep(ms: number): Promise<void> {
 
 export function useLiveGuide({
   getVideo,
+  getDigitalScale,
   cameraActive,
   openCamera,
   sendMonitorTurn,
@@ -117,6 +119,7 @@ export function useLiveGuide({
   const bootstrapInFlightRef = useRef(false);
 
   const getVideoRef = useRef(getVideo);
+  const getDigitalScaleRef = useRef(getDigitalScale ?? (() => 1));
   const openCameraRef = useRef(openCamera);
   const sendMonitorTurnRef = useRef(sendMonitorTurn);
   const sendBootstrapTurnRef = useRef(sendBootstrapTurn);
@@ -125,12 +128,13 @@ export function useLiveGuide({
 
   useEffect(() => {
     getVideoRef.current = getVideo;
+    getDigitalScaleRef.current = getDigitalScale ?? (() => 1);
     openCameraRef.current = openCamera;
     sendMonitorTurnRef.current = sendMonitorTurn;
     sendBootstrapTurnRef.current = sendBootstrapTurn;
     isAgentBusyRef.current = isAgentBusy;
     cameraActiveRef.current = cameraActive;
-  }, [cameraActive, getVideo, isAgentBusy, openCamera, sendBootstrapTurn, sendMonitorTurn]);
+  }, [cameraActive, getDigitalScale, getVideo, isAgentBusy, openCamera, sendBootstrapTurn, sendMonitorTurn]);
 
   useEffect(() => {
     activeRef.current = active;
@@ -239,7 +243,9 @@ export function useLiveGuide({
     while (performance.now() < deadline) {
       const video = getVideoRef.current();
       if (video) {
-        const frame = await prepareVideoFrameForModel(video);
+        const frame = await prepareVideoFrameForModel(video, {
+          digitalScale: getDigitalScaleRef.current(),
+        });
         if (frame) {
           referenceFrameRef.current = {
             blob: frame.blob,
@@ -391,7 +397,9 @@ export function useLiveGuide({
 
       void (async () => {
         try {
-          const frame = await prepareVideoFrameForModel(video);
+          const frame = await prepareVideoFrameForModel(video, {
+          digitalScale: getDigitalScaleRef.current(),
+        });
           if (!frame) return;
 
           referenceFrameRef.current = { blob: frame.blob, width: frame.width, height: frame.height };

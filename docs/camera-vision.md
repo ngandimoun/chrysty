@@ -69,14 +69,14 @@ The live preview exposes modern camera tools on top of the existing flip, torch,
 
 | Control | UI | Behavior |
 |---------|-----|----------|
-| **Zoom** | Pinch on preview, right-edge slider, +/- buttons | Uses `MediaStreamTrack.applyConstraints({ zoom })` when the device exposes zoom capabilities |
+| **Zoom** | Pinch on preview, right-edge slider, +/- buttons | Uses hardware `MediaStreamTrack.applyConstraints({ zoom })` when available; **digital dezoom from 0.25x up to the lens minimum** scales preview and captures together (WYSIWYG) |
 | **Grid** | Grid toggle in the tools pill | Rule-of-thirds overlay on the preview only (not burned into captures) |
 | **Self-timer** | Timer toggle cycles Off → 3s → 5s → 10s → 15s → 30s | Countdown on the shutter; tap the number to cancel |
 | **Aspect ratio** | Ratio toggle cycles 16:9 → 4:3 → 1:1 | Re-acquires the camera stream with an `aspectRatio` constraint and resizes the preview shell |
 | **Exposure** | Sun icon opens a +/- stepper | Uses `exposureCompensation` when supported |
 | **Tap to focus** | Quick tap on the preview (no drag) | Uses `pointsOfInterest` / manual focus when supported; shows a brief reticle |
 
-Capability detection runs after every stream open, flip, or aspect-ratio change. Unsupported controls are hidden rather than faked (for example, no CSS-only zoom, because that would not improve captured stills).
+Capability detection runs after every stream open, flip, or aspect-ratio change. Unsupported controls are hidden rather than faked. Zoom is an exception below the hardware minimum: digital dezoom (down to **0.25x**) shrinks the preview in-frame and is baked into captures so what you see is what you send. That does **not** add a wider physical lens — it is a framing aid when the device cannot zoom out further.
 
 **Browser limits:**
 

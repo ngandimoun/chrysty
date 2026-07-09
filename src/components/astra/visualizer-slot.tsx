@@ -52,6 +52,7 @@ interface VisualizerSlotProps {
   canUseTorch?: boolean;
   torchOn?: boolean;
   zoom?: number;
+  digitalScale?: number;
   zoomRange?: NumericRange | null;
   canZoom?: boolean;
   exposureCompensation?: number;
@@ -95,6 +96,7 @@ export function VisualizerSlot({
   canUseTorch,
   torchOn,
   zoom,
+  digitalScale,
   zoomRange,
   canZoom,
   exposureCompensation,
@@ -198,6 +200,7 @@ export function VisualizerSlot({
               canUseTorch={canUseTorch}
               torchOn={torchOn}
               zoom={zoom}
+              digitalScale={digitalScale}
               zoomRange={zoomRange}
               canZoom={canZoom}
               exposureCompensation={exposureCompensation}

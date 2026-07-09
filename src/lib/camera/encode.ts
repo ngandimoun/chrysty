@@ -1,5 +1,12 @@
+import { drawVideoFrameObjectCover } from '@/lib/camera/object-cover';
+
 export const IMAGE_MAX_LONGEST_EDGE = 1280;
 export const IMAGE_JPEG_QUALITY = 0.8;
+
+export interface PrepareVideoFrameOptions {
+  digitalScale?: number;
+  previewAspect?: number;
+}
 
 export interface PreparedImageForModel {
   blob: Blob;
@@ -48,8 +55,45 @@ export function encodeCanvasAsJpeg(
   });
 }
 
+function resolvePreviewAspect(
+  video: HTMLVideoElement,
+  previewAspect?: number,
+): number {
+  if (previewAspect && previewAspect > 0) {
+    return previewAspect;
+  }
+
+  const shell = video.parentElement;
+  if (shell && shell.clientWidth > 0 && shell.clientHeight > 0) {
+    return shell.clientWidth / shell.clientHeight;
+  }
+
+  return video.videoWidth / video.videoHeight;
+}
+
+function computeOutputDimensions(
+  video: HTMLVideoElement,
+  previewAspect: number,
+  maxLongestEdge = IMAGE_MAX_LONGEST_EDGE,
+): { width: number; height: number } {
+  const videoAspect = video.videoWidth / video.videoHeight;
+  let width: number;
+  let height: number;
+
+  if (previewAspect >= videoAspect) {
+    width = Math.round(video.videoWidth);
+    height = Math.round(width / previewAspect);
+  } else {
+    height = Math.round(video.videoHeight);
+    width = Math.round(height * previewAspect);
+  }
+
+  return computeDownscaledDimensions(width, height, maxLongestEdge);
+}
+
 export async function prepareVideoFrameForModel(
   video: HTMLVideoElement,
+  options: PrepareVideoFrameOptions = {},
 ): Promise<PreparedImageForModel | null> {
   if (video.videoWidth === 0 || video.videoHeight === 0) {
     return null;
@@ -60,7 +104,9 @@ export async function prepareVideoFrameForModel(
     return null;
   }
 
-  const { width, height } = computeDownscaledDimensions(video.videoWidth, video.videoHeight);
+  const digitalScale = options.digitalScale ?? 1;
+  const previewAspect = resolvePreviewAspect(video, options.previewAspect);
+  const { width, height } = computeOutputDimensions(video, previewAspect);
   if (width === 0 || height === 0) {
     return null;
   }
@@ -72,7 +118,11 @@ export async function prepareVideoFrameForModel(
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  ctx.drawImage(video, 0, 0, width, height);
+  if (digitalScale < 1) {
+    drawVideoFrameObjectCover(ctx, video, { width, height }, digitalScale);
+  } else {
+    ctx.drawImage(video, 0, 0, width, height);
+  }
 
   const blob = await encodeCanvasAsJpeg(canvas);
   return {

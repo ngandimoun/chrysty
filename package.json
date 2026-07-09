@@ -22,6 +22,7 @@
     "test:ecosystem": "tsx scripts/test-ecosystem-activity.ts",
     "test:mem0": "tsx scripts/test-mem0-memory.ts",
     "test:gemini-errors": "tsx tests/gemini/user-facing-error.test.ts",
+    "test:zoom-model": "tsx tests/camera/zoom-model.test.ts",
     "db:apply": "node scripts/apply-astra-migrations.mjs",
     "db:verify": "node scripts/verify-astra-schema.mjs"
   },
