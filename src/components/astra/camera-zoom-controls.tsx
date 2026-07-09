@@ -1,9 +1,10 @@
 'use client';
 
 import { Minus, Plus } from 'lucide-react';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 
 import { CameraToolButton } from '@/components/astra/camera-tool-button';
+import { isCoarsePointer } from '@/lib/device/is-ios';
 import type { NumericRange } from '@/lib/camera/track-controls';
 import { cn } from '@/lib/utils';
 
@@ -14,6 +15,8 @@ interface CameraZoomControlsProps {
   onZoomChange: (value: number) => void;
   className?: string;
 }
+
+const PINCH_ZOOM_SENSITIVITY = 0.55;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -35,6 +38,7 @@ export function CameraZoomControls({
 }: CameraZoomControlsProps) {
   const { min, max, step } = zoomRange;
   const progress = max > min ? ((zoom - min) / (max - min)) * 100 : 0;
+  const nudgeStep = isCoarsePointer() ? step * 0.5 : step;
 
   const handleSliderChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -45,9 +49,9 @@ export function CameraZoomControls({
 
   const nudgeZoom = useCallback(
     (direction: -1 | 1) => {
-      onZoomChange(clamp(zoom + direction * step, min, max));
+      onZoomChange(clamp(zoom + direction * nudgeStep, min, max));
     },
-    [max, min, onZoomChange, step, zoom],
+    [max, min, nudgeStep, onZoomChange, zoom],
   );
 
   return (
@@ -130,6 +134,7 @@ export function usePinchZoom({
     zoom: number;
   } | null>(null);
   const lastUpdateRef = useRef(0);
+  const isPinchingRef = useRef(false);
 
   const onTouchStart = useCallback(
     (event: React.TouchEvent<HTMLDivElement>) => {
@@ -140,6 +145,7 @@ export function usePinchZoom({
 
       const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
       pinchRef.current = { distance, zoom };
+      isPinchingRef.current = true;
     },
     [enabled, zoom, zoomRange],
   );
@@ -158,12 +164,9 @@ export function usePinchZoom({
       const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
       if (pinchRef.current.distance <= 0) return;
 
-      const scale = distance / pinchRef.current.distance;
-      const nextZoom = clamp(
-        pinchRef.current.zoom * scale,
-        zoomRange.min,
-        zoomRange.max,
-      );
+      const ratio = distance / pinchRef.current.distance;
+      const damped = Math.pow(ratio, PINCH_ZOOM_SENSITIVITY);
+      const nextZoom = clamp(pinchRef.current.zoom * damped, zoomRange.min, zoomRange.max);
       pinchRef.current = { distance, zoom: nextZoom };
       onZoomChange(nextZoom);
       event.preventDefault();
@@ -173,9 +176,11 @@ export function usePinchZoom({
 
   const onTouchEnd = useCallback(() => {
     pinchRef.current = null;
+    isPinchingRef.current = false;
   }, []);
 
   return {
+    isPinchingRef,
     pinchHandlers: enabled && zoomRange
       ? {
           onTouchStart,
@@ -185,4 +190,60 @@ export function usePinchZoom({
         }
       : {},
   };
+}
+
+export function useNonPassivePinchGuard(
+  elementRef: RefObject<HTMLElement | null>,
+  isPinchingRef: RefObject<boolean>,
+  enabled: boolean,
+): void {
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || !enabled) return;
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (isPinchingRef.current && event.touches.length >= 2) {
+        event.preventDefault();
+      }
+    };
+
+    element.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => element.removeEventListener('touchmove', onTouchMove);
+  }, [elementRef, enabled, isPinchingRef]);
+}
+
+export function useWheelZoom({
+  enabled,
+  zoom,
+  zoomRange,
+  onZoomChange,
+  elementRef,
+}: {
+  enabled: boolean;
+  zoom: number;
+  zoomRange: NumericRange | null;
+  onZoomChange: (value: number) => void;
+  elementRef: RefObject<HTMLElement | null>;
+}): void {
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!enabled || !zoomRange || !element) return;
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const nextZoom = clamp(
+        zoomRef.current + direction * zoomRange.step,
+        zoomRange.min,
+        zoomRange.max,
+      );
+      onZoomChange(nextZoom);
+    };
+
+    element.addEventListener('wheel', onWheel, { passive: false });
+    return () => element.removeEventListener('wheel', onWheel);
+  }, [elementRef, enabled, onZoomChange, zoomRange]);
 }

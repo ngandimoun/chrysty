@@ -53,27 +53,59 @@ export function mapCameraGetUserMediaError(error: unknown): CameraError {
 export function buildVideoConstraints(
   facing: CameraFacing,
   aspectRatio: CameraAspectRatio = DEFAULT_CAMERA_ASPECT_RATIO,
+  options?: { isLandscape?: boolean },
 ): MediaTrackConstraints {
+  const isLandscape = options?.isLandscape ?? false;
+  const widthIdeal = isLandscape ? 1280 : 720;
+  const heightIdeal = isLandscape ? 720 : 1280;
+
   return {
     facingMode: { ideal: facing },
     aspectRatio: { ideal: getAspectRatioConstraintValue(aspectRatio) },
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+    width: { ideal: widthIdeal },
+    height: { ideal: heightIdeal },
   };
+}
+
+export function buildRelaxedVideoConstraints(facing: CameraFacing): MediaTrackConstraints {
+  return {
+    facingMode: { ideal: facing },
+  };
+}
+
+async function getUserMediaWithFallback(
+  facing: CameraFacing,
+  aspectRatio: CameraAspectRatio,
+  isLandscape?: boolean,
+): Promise<MediaStream> {
+  const constraints = buildVideoConstraints(facing, aspectRatio, { isLandscape });
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: constraints,
+      audio: false,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'OverconstrainedError') {
+      return navigator.mediaDevices.getUserMedia({
+        video: buildRelaxedVideoConstraints(facing),
+        audio: false,
+      });
+    }
+    throw error;
+  }
 }
 
 export async function acquireVideoStream(
   facing: CameraFacing,
   aspectRatio: CameraAspectRatio = DEFAULT_CAMERA_ASPECT_RATIO,
+  options?: { isLandscape?: boolean },
 ): Promise<MediaStream> {
   assertSecureCameraContext();
   assertCameraSupported();
 
   try {
-    return await navigator.mediaDevices.getUserMedia({
-      video: buildVideoConstraints(facing, aspectRatio),
-      audio: false,
-    });
+    return await getUserMediaWithFallback(facing, aspectRatio, options?.isLandscape);
   } catch (error) {
     throw mapCameraGetUserMediaError(error);
   }
@@ -87,9 +119,10 @@ export async function switchVideoFacing(
   currentStream: MediaStream | null,
   facing: CameraFacing,
   aspectRatio: CameraAspectRatio = DEFAULT_CAMERA_ASPECT_RATIO,
+  options?: { isLandscape?: boolean },
 ): Promise<MediaStream> {
   releaseVideoStream(currentStream);
-  return acquireVideoStream(facing, aspectRatio);
+  return acquireVideoStream(facing, aspectRatio, options);
 }
 
 export async function hasMultipleCameras(): Promise<boolean> {

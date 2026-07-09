@@ -5,11 +5,12 @@ import type { ReactNode } from 'react';
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { FocusAnnotation, FocusAnnotationShape } from '@/lib/camera/types';
+import { isCoarsePointer } from '@/lib/device/is-ios';
 import { createUuid } from '@/lib/ids';
 import { cn } from '@/lib/utils';
 
-const MIN_ANNOTATION_SIZE = 0.02;
-const HIT_PADDING = 0.025;
+const MIN_ANNOTATION_SIZE_PX = 28;
+const HIT_PADDING_PX = 14;
 const POINTER_SIZE = 0.085;
 const QUICK_TAP_MOVE_THRESHOLD_PX = 8;
 const QUICK_TAP_DURATION_MS = 250;
@@ -34,11 +35,19 @@ interface FocusAnnotationOverlayProps {
   className?: string;
   toolbarClassName?: string;
   disabled?: boolean;
+  previewAspect?: number;
   onQuickTap?: (point: { x: number; y: number }) => void;
   renderToolbar?: (toolbar: ReactNode) => ReactNode;
 }
 
-function hasUsableAnnotation(annotation: DraftAnnotation | null): annotation is DraftAnnotation {
+function hitPaddingNormalized(bounds: { width: number; height: number }): number {
+  return HIT_PADDING_PX / Math.min(bounds.width, bounds.height);
+}
+
+function hasUsableAnnotation(
+  annotation: DraftAnnotation | null,
+  bounds: { width: number; height: number },
+): annotation is DraftAnnotation {
   if (annotation?.shape === 'pointer') {
     return true;
   }
@@ -48,14 +57,18 @@ function hasUsableAnnotation(annotation: DraftAnnotation | null): annotation is 
     const startY = annotation.startY ?? annotation.y;
     const endX = annotation.endX ?? annotation.x + annotation.width;
     const endY = annotation.endY ?? annotation.y + annotation.height;
-    return Math.hypot(endX - startX, endY - startY) >= MIN_ANNOTATION_SIZE;
+    const lengthPx = Math.hypot(
+      (endX - startX) * bounds.width,
+      (endY - startY) * bounds.height,
+    );
+    return lengthPx >= MIN_ANNOTATION_SIZE_PX;
   }
 
-  return Boolean(
-    annotation &&
-      annotation.width >= MIN_ANNOTATION_SIZE &&
-      annotation.height >= MIN_ANNOTATION_SIZE,
-  );
+  if (!annotation) return false;
+
+  const widthPx = annotation.width * bounds.width;
+  const heightPx = annotation.height * bounds.height;
+  return Math.max(widthPx, heightPx) >= MIN_ANNOTATION_SIZE_PX;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -68,6 +81,7 @@ function buildAnnotationFromPoints(
   anchorY: number,
   currentX: number,
   currentY: number,
+  bounds: { width: number; height: number },
 ): DraftAnnotation {
   if (shape === 'pointer') {
     const size = POINTER_SIZE;
@@ -79,6 +93,25 @@ function buildAnnotationFromPoints(
       height: size,
       endX: currentX,
       endY: currentY,
+    };
+  }
+
+  if (shape === 'circle') {
+    const dxPx = (currentX - anchorX) * bounds.width;
+    const dyPx = (currentY - anchorY) * bounds.height;
+    const radiusPx = Math.max(Math.abs(dxPx), Math.abs(dyPx)) / 2;
+    const diameterPx = Math.max(radiusPx * 2, MIN_ANNOTATION_SIZE_PX);
+    const width = diameterPx / bounds.width;
+    const height = diameterPx / bounds.height;
+    const centerX = (anchorX + currentX) / 2;
+    const centerY = (anchorY + currentY) / 2;
+
+    return {
+      shape,
+      x: clamp(centerX - width / 2, 0, 1 - width),
+      y: clamp(centerY - height / 2, 0, 1 - height),
+      width,
+      height,
     };
   }
 
@@ -105,11 +138,16 @@ function buildAnnotationFromPoints(
   };
 }
 
-function pointHitsAnnotation(point: { x: number; y: number }, annotation: FocusAnnotation): boolean {
-  const x = annotation.x - HIT_PADDING;
-  const y = annotation.y - HIT_PADDING;
-  const width = annotation.width + HIT_PADDING * 2;
-  const height = annotation.height + HIT_PADDING * 2;
+function pointHitsAnnotation(
+  point: { x: number; y: number },
+  annotation: FocusAnnotation,
+  bounds: { width: number; height: number },
+): boolean {
+  const padding = hitPaddingNormalized(bounds);
+  const x = annotation.x - padding;
+  const y = annotation.y - padding;
+  const width = annotation.width + padding * 2;
+  const height = annotation.height + padding * 2;
 
   if (annotation.shape !== 'circle') {
     return point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height;
@@ -158,16 +196,19 @@ function isToolbarEventTarget(target: EventTarget | null): boolean {
 function AnnotationPreview({
   annotation,
   selected = false,
+  coarsePointer = false,
 }: {
   annotation: DraftAnnotation;
   selected?: boolean;
+  coarsePointer?: boolean;
 }) {
   const x = annotation.x * 100;
   const y = annotation.y * 100;
   const width = annotation.width * 100;
   const height = annotation.height * 100;
   const selectionStroke = selected ? 'rgba(255,255,255,0.92)' : 'rgba(8,15,30,0.78)';
-  const selectionStrokeWidth = selected ? '2.6' : '1.9';
+  const selectionStrokeWidth = coarsePointer ? (selected ? '3.2' : '2.4') : selected ? '2.6' : '1.9';
+  const accentStrokeWidth = coarsePointer ? '1.5' : '1.1';
 
   if (annotation.shape === 'arrow') {
     const arrow = getArrowVector(annotation);
@@ -258,7 +299,7 @@ function AnnotationPreview({
           ry={height / 2}
           fill="none"
           stroke="#7dd3fc"
-          strokeWidth="1.1"
+          strokeWidth={accentStrokeWidth}
         />
       </>
     );
@@ -296,7 +337,7 @@ function AnnotationPreview({
         height={height}
         fill="none"
         stroke="#7dd3fc"
-        strokeWidth="1.1"
+        strokeWidth={accentStrokeWidth}
       />
     </>
   );
@@ -308,9 +349,12 @@ export function FocusAnnotationOverlay({
   className,
   toolbarClassName,
   disabled = false,
+  previewAspect: _previewAspect = 1,
   onQuickTap,
   renderToolbar,
 }: FocusAnnotationOverlayProps) {
+  const coarsePointer = isCoarsePointer();
+  const boundsRef = useRef({ width: 1, height: 1 });
   const [shape, setShape] = useState<FocusAnnotationShape | null>(null);
   const [draftAnnotation, setDraftAnnotation] = useState<DraftAnnotation | null>(null);
   const [dragAnchor, setDragAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -327,11 +371,15 @@ export function FocusAnnotationOverlay({
     const bounds = event.currentTarget.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return null;
 
+    boundsRef.current = { width: bounds.width, height: bounds.height };
+
     return {
       x: Math.min(Math.max((event.clientX - bounds.left) / bounds.width, 0), 1),
       y: Math.min(Math.max((event.clientY - bounds.top) / bounds.height, 0), 1),
     };
   }
+
+  const getBounds = () => boundsRef.current;
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (disabled) return;
@@ -349,7 +397,7 @@ export function FocusAnnotationOverlay({
     const hitAnnotation = annotations
       .slice()
       .reverse()
-      .find((annotation) => pointHitsAnnotation(point, annotation));
+      .find((annotation) => pointHitsAnnotation(point, annotation, getBounds()));
 
     if (hitAnnotation) {
       setSelectedAnnotationId(hitAnnotation.id);
@@ -365,7 +413,9 @@ export function FocusAnnotationOverlay({
 
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragAnchor(point);
-    setDraftAnnotation(buildAnnotationFromPoints(shape, point.x, point.y, point.x, point.y));
+    setDraftAnnotation(
+      buildAnnotationFromPoints(shape, point.x, point.y, point.x, point.y, getBounds()),
+    );
     setSelectedAnnotationId(null);
   };
 
@@ -375,7 +425,9 @@ export function FocusAnnotationOverlay({
     const point = getNormalizedPoint(event);
     if (!point) return;
 
-    setDraftAnnotation(buildAnnotationFromPoints(shape, dragAnchor.x, dragAnchor.y, point.x, point.y));
+    setDraftAnnotation(
+      buildAnnotationFromPoints(shape, dragAnchor.x, dragAnchor.y, point.x, point.y, getBounds()),
+    );
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -384,7 +436,7 @@ export function FocusAnnotationOverlay({
     const start = pointerStartRef.current;
     pointerStartRef.current = null;
 
-    if (hasUsableAnnotation(draftAnnotation)) {
+    if (hasUsableAnnotation(draftAnnotation, getBounds())) {
       const nextAnnotation: FocusAnnotation = {
         id: createUuid(),
         ...draftAnnotation,
@@ -462,6 +514,7 @@ export function FocusAnnotationOverlay({
             aria-pressed={shape === option.value}
             className={cn(
               'flex size-8 touch-manipulation items-center justify-center rounded-full border border-transparent bg-transparent text-cyan-50 outline-none transition-colors hover:border-white/10 hover:bg-slate-800/80 focus-visible:border-cyan-300/70 focus-visible:ring-2 focus-visible:ring-cyan-300/30 disabled:pointer-events-none disabled:opacity-50',
+              'pointer-coarse:size-11',
               shape === option.value && 'border-cyan-400/45 bg-cyan-500/15 text-cyan-100',
             )}
           >
@@ -541,11 +594,15 @@ export function FocusAnnotationOverlay({
       >
         {annotations.map((annotation) => (
           <g key={annotation.id}>
-            <AnnotationPreview annotation={annotation} selected={selectedAnnotationId === annotation.id} />
+            <AnnotationPreview
+              annotation={annotation}
+              selected={selectedAnnotationId === annotation.id}
+              coarsePointer={coarsePointer}
+            />
           </g>
         ))}
-        {draftAnnotation && hasUsableAnnotation(draftAnnotation) ? (
-          <AnnotationPreview annotation={draftAnnotation} />
+        {draftAnnotation && hasUsableAnnotation(draftAnnotation, getBounds()) ? (
+          <AnnotationPreview annotation={draftAnnotation} coarsePointer={coarsePointer} />
         ) : null}
       </svg>
     </div>

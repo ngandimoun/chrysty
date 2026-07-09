@@ -11,16 +11,22 @@ import {
   cycleAspectRatio,
   cycleTimerSeconds,
 } from '@/components/astra/camera-tools-pill';
-import { CameraZoomControls, usePinchZoom } from '@/components/astra/camera-zoom-controls';
+import {
+  CameraZoomControls,
+  useNonPassivePinchGuard,
+  usePinchZoom,
+  useWheelZoom,
+} from '@/components/astra/camera-zoom-controls';
 import { FocusAnnotationOverlay } from '@/components/astra/focus-annotation-overlay';
 import { Button } from '@/components/ui/button';
-import { getAspectRatioShellClass } from '@/lib/camera/aspect-ratio';
+import { useViewportOrientation } from '@/hooks/use-viewport-orientation';
+import {
+  CAMERA_PREVIEW_SHELL_BASE_CLASS,
+  getOrientationAwareShellClass,
+} from '@/lib/camera/aspect-ratio';
 import type { NumericRange } from '@/lib/camera/track-controls';
 import { MAX_PENDING_PHOTOS, type CameraAspectRatio, type CameraTimerSeconds, type FocusAnnotation } from '@/lib/camera/types';
 import { cn } from '@/lib/utils';
-
-const cameraPreviewShellBaseClass =
-  'relative mx-auto w-[min(98vw,64rem)] overflow-hidden rounded-3xl border border-cyan-400/20 bg-slate-950/60 shadow-[0_0_60px_rgba(31,213,249,0.12)]';
 
 interface CameraPreviewProps {
   stream: MediaStream;
@@ -82,8 +88,11 @@ export function CameraPreview({
   onFocusAtPoint,
   onFocusAnnotationsChange,
 }: CameraPreviewProps) {
+  const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const countdownTimerRef = useRef<number | null>(null);
+
+  const { isLandscape, viewportWidth, viewportHeight, isCoarsePointer } = useViewportOrientation();
 
   const [gridVisible, setGridVisible] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState<CameraTimerSeconds>(0);
@@ -93,12 +102,29 @@ export function CameraPreview({
   const atPhotoLimit = pendingPhotoCount >= MAX_PENDING_PHOTOS;
   const showTopTools = canFlipCamera || canUseTorch;
   const controlsLocked = controlsDisabled || countdown !== null;
+  const previewAspect = viewportHeight > 0 ? viewportWidth / viewportHeight : 1;
+  const useMobileLandscapeLayout = isCoarsePointer && isLandscape;
+  const shellClass = getOrientationAwareShellClass({
+    isLandscape,
+    isCoarsePointer,
+    userAspectRatio: aspectRatio,
+  });
 
-  const { pinchHandlers } = usePinchZoom({
+  const { pinchHandlers, isPinchingRef } = usePinchZoom({
     enabled: canZoom && Boolean(zoomRange) && !controlsLocked,
     zoom,
     zoomRange,
     onZoomChange: (value) => onZoomChange?.(value),
+  });
+
+  useNonPassivePinchGuard(shellRef, isPinchingRef, canZoom && Boolean(zoomRange));
+
+  useWheelZoom({
+    enabled: canZoom && Boolean(zoomRange) && !controlsLocked && !isCoarsePointer,
+    zoom,
+    zoomRange,
+    onZoomChange: (value) => onZoomChange?.(value),
+    elementRef: shellRef,
   });
 
   useEffect(() => {
@@ -201,12 +227,8 @@ export function CameraPreview({
 
   return (
     <div
-      className={cn(
-        cameraPreviewShellBaseClass,
-        getAspectRatioShellClass(aspectRatio),
-        'max-h-[min(70dvh,52rem)]',
-        className,
-      )}
+      ref={shellRef}
+      className={cn(CAMERA_PREVIEW_SHELL_BASE_CLASS, shellClass, className)}
       {...pinchHandlers}
     >
       <video
@@ -233,10 +255,18 @@ export function CameraPreview({
         onChange={(annotations) => onFocusAnnotationsChange?.(annotations)}
         disabled={controlsLocked || !onFocusAnnotationsChange}
         onQuickTap={canFocusAtPoint ? handleQuickTap : undefined}
+        previewAspect={previewAspect}
         className="z-10"
         renderToolbar={(toolbar) => (
           <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:p-4">
-            <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2 max-sm:grid-cols-1 max-sm:justify-items-center">
+            <div
+              className={cn(
+                'grid items-start gap-2',
+                useMobileLandscapeLayout
+                  ? 'grid-cols-[auto_1fr_auto]'
+                  : 'grid-cols-[auto_1fr_auto] max-sm:grid-cols-1 max-sm:justify-items-center',
+              )}
+            >
               <CameraToolsPill
                 disabled={controlsLocked}
                 gridVisible={gridVisible}
@@ -249,13 +279,28 @@ export function CameraPreview({
                 onCycleTimer={handleCycleTimer}
                 onCycleAspectRatio={handleCycleAspectRatio}
                 onExposureChange={(value) => onExposureChange?.(value)}
-                className="justify-self-start max-sm:order-2"
+                className={cn(
+                  'justify-self-start',
+                  !useMobileLandscapeLayout && 'max-sm:order-2',
+                )}
               />
 
-              <div className="pointer-events-auto flex justify-center max-sm:order-1">{toolbar}</div>
+              <div
+                className={cn(
+                  'pointer-events-auto flex justify-center',
+                  !useMobileLandscapeLayout && 'max-sm:order-1',
+                )}
+              >
+                {toolbar}
+              </div>
 
               {showTopTools ? (
-                <div className="pointer-events-auto flex items-center justify-end justify-self-end gap-2 rounded-full border border-white/5 bg-slate-950/30 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-sm max-sm:order-3">
+                <div
+                  className={cn(
+                    'pointer-events-auto flex items-center justify-end justify-self-end gap-2 rounded-full border border-white/5 bg-slate-950/30 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-sm',
+                    !useMobileLandscapeLayout && 'max-sm:order-3',
+                  )}
+                >
                   {canUseTorch ? (
                     <CameraToolButton
                       active={torchOn}
@@ -278,7 +323,7 @@ export function CameraPreview({
                   ) : null}
                 </div>
               ) : (
-                <div className="max-sm:hidden" aria-hidden />
+                <div className={cn(!useMobileLandscapeLayout && 'max-sm:hidden')} aria-hidden />
               )}
             </div>
           </div>
@@ -293,6 +338,7 @@ export function CameraPreview({
           zoomRange={zoomRange}
           disabled={controlsLocked}
           onZoomChange={(value) => onZoomChange?.(value)}
+          className={useMobileLandscapeLayout ? 'pr-4' : undefined}
         />
       ) : null}
 

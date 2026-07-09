@@ -32,6 +32,7 @@ import type {
 } from '@/lib/camera/types';
 import { CameraError, MAX_PENDING_PHOTOS } from '@/lib/camera/types';
 import { createUuid } from '@/lib/ids';
+import { useViewportOrientation } from '@/hooks/use-viewport-orientation';
 
 interface UseCameraResult {
   stream: MediaStream | null;
@@ -89,6 +90,11 @@ export function useCamera(): UseCameraResult {
   const torchOnRef = useRef(false);
   const facingRef = useRef<CameraFacing>('environment');
   const aspectRatioRef = useRef<CameraAspectRatio>(DEFAULT_CAMERA_ASPECT_RATIO);
+  const isLandscapeRef = useRef(false);
+  const prevLandscapeRef = useRef(false);
+  const orientationRefreshTimerRef = useRef<number | null>(null);
+
+  const { isLandscape } = useViewportOrientation();
 
   useEffect(() => {
     pendingPhotosRef.current = pendingPhotos;
@@ -121,7 +127,6 @@ export function useCamera(): UseCameraResult {
         ? { min: zoomState.min, max: zoomState.max, step: zoomState.step }
         : null,
     );
-    setZoomState(zoomState.current);
 
     setCanAdjustExposure(exposureState.supported);
     setExposureRange(
@@ -131,6 +136,29 @@ export function useCamera(): UseCameraResult {
     );
     setExposureCompensationState(exposureState.current);
     setCanFocusAtPoint(isFocusPointSupported(track));
+  }, []);
+
+  const resetZoomToDefault = useCallback(async (nextStream: MediaStream) => {
+    const track = getVideoTrack(nextStream);
+    if (!track) {
+      setZoomState(1);
+      return;
+    }
+
+    const zoomState = getZoomState(track);
+    if (!zoomState.supported) {
+      setZoomState(1);
+      return;
+    }
+
+    const targetZoom = Math.min(Math.max(1, zoomState.min), zoomState.max);
+
+    try {
+      const nextZoom = await applyZoom(track, targetZoom);
+      setZoomState(nextZoom);
+    } catch {
+      setZoomState(zoomState.current);
+    }
   }, []);
 
   const turnOffTorch = useCallback(async (activeStream: MediaStream | null) => {
@@ -178,21 +206,31 @@ export function useCamera(): UseCameraResult {
       setFacing(nextFacing);
       syncTorchCapability(nextStream, nextFacing);
       syncTrackCapabilities(nextStream);
+      void resetZoomToDefault(nextStream);
     },
-    [syncTorchCapability, syncTrackCapabilities],
+    [resetZoomToDefault, syncTorchCapability, syncTrackCapabilities],
+  );
+
+  const getStreamOptions = useCallback(
+    () => ({ isLandscape: isLandscapeRef.current }),
+    [],
   );
 
   const openCamera = useCallback(async () => {
     try {
       closeCamera();
-      const nextStream = await acquireVideoStream(facingRef.current, aspectRatioRef.current);
+      const nextStream = await acquireVideoStream(
+        facingRef.current,
+        aspectRatioRef.current,
+        getStreamOptions(),
+      );
       attachStream(nextStream, facingRef.current);
       setCanFlip(await hasMultipleCameras());
     } catch (error) {
       closeCamera();
       throw error instanceof CameraError ? error : new CameraError('unknown', 'Could not open camera.');
     }
-  }, [attachStream, closeCamera]);
+  }, [attachStream, closeCamera, getStreamOptions]);
 
   const toggleSelfie = useCallback(async () => {
     const nextFacing: CameraFacing = facingRef.current === 'user' ? 'environment' : 'user';
@@ -205,12 +243,13 @@ export function useCamera(): UseCameraResult {
         streamRef.current,
         nextFacing,
         aspectRatioRef.current,
+        getStreamOptions(),
       );
       attachStream(nextStream, nextFacing);
     } catch (error) {
       throw error instanceof CameraError ? error : new CameraError('unknown', 'Could not switch camera.');
     }
-  }, [attachStream, turnOffTorch]);
+  }, [attachStream, getStreamOptions, turnOffTorch]);
 
   const setAspectRatio = useCallback(
     async (ratio: CameraAspectRatio) => {
@@ -220,7 +259,12 @@ export function useCamera(): UseCameraResult {
 
       try {
         await turnOffTorch(streamRef.current);
-        const nextStream = await switchVideoFacing(streamRef.current, facingRef.current, ratio);
+        const nextStream = await switchVideoFacing(
+          streamRef.current,
+          facingRef.current,
+          ratio,
+          getStreamOptions(),
+        );
         aspectRatioRef.current = ratio;
         setAspectRatioState(ratio);
         attachStream(nextStream, facingRef.current);
@@ -230,8 +274,56 @@ export function useCamera(): UseCameraResult {
           : new CameraError('unknown', 'Could not change aspect ratio.');
       }
     },
-    [attachStream, turnOffTorch],
+    [attachStream, getStreamOptions, turnOffTorch],
   );
+
+  useEffect(() => {
+    isLandscapeRef.current = isLandscape;
+  }, [isLandscape]);
+
+  useEffect(() => {
+    if (!streamRef.current) {
+      prevLandscapeRef.current = isLandscape;
+      return;
+    }
+
+    if (prevLandscapeRef.current === isLandscape) {
+      return;
+    }
+
+    prevLandscapeRef.current = isLandscape;
+
+    if (orientationRefreshTimerRef.current !== null) {
+      window.clearTimeout(orientationRefreshTimerRef.current);
+    }
+
+    orientationRefreshTimerRef.current = window.setTimeout(() => {
+      const activeStream = streamRef.current;
+      if (!activeStream) return;
+
+      void (async () => {
+        try {
+          await turnOffTorch(activeStream);
+          const nextStream = await switchVideoFacing(
+            activeStream,
+            facingRef.current,
+            aspectRatioRef.current,
+            getStreamOptions(),
+          );
+          attachStream(nextStream, facingRef.current);
+        } catch {
+          // Rely on CSS layout if stream refresh fails on rotation.
+        }
+      })();
+    }, 300);
+
+    return () => {
+      if (orientationRefreshTimerRef.current !== null) {
+        window.clearTimeout(orientationRefreshTimerRef.current);
+        orientationRefreshTimerRef.current = null;
+      }
+    };
+  }, [attachStream, getStreamOptions, isLandscape, turnOffTorch]);
 
   const toggleTorch = useCallback(async () => {
     const track = getVideoTrack(streamRef.current);

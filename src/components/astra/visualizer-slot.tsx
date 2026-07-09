@@ -25,7 +25,7 @@ const CameraPreview = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="mx-auto aspect-video max-h-[min(70dvh,52rem)] w-[min(98vw,64rem)] animate-pulse rounded-3xl bg-muted" />
+      <div className="relative mx-auto w-full max-h-[min(82dvh,52rem)] aspect-video overflow-hidden rounded-3xl animate-pulse bg-muted sm:w-[min(98vw,64rem)]" />
     ),
   },
 );

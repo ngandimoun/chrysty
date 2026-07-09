@@ -40,4 +40,35 @@ export function getAspectRatioShellClass(ratio: CameraAspectRatio): string {
   }
 }
 
+export interface OrientationAwareShellOptions {
+  isLandscape: boolean;
+  isCoarsePointer: boolean;
+  userAspectRatio: CameraAspectRatio;
+}
+
+export function getOrientationAwareShellClass({
+  isLandscape,
+  isCoarsePointer,
+  userAspectRatio,
+}: OrientationAwareShellOptions): string {
+  const aspectClass = getAspectRatioShellClass(userAspectRatio);
+
+  if (isCoarsePointer) {
+    if (isLandscape) {
+      return cnShell('w-full max-w-none', aspectClass, 'max-h-[min(92dvh,calc(100vw*9/16))]');
+    }
+
+    return cnShell('w-full max-w-none', aspectClass, 'max-h-[min(82dvh,calc(100vw*4/3))]');
+  }
+
+  return cnShell('w-[min(98vw,64rem)]', aspectClass, 'max-h-[min(75dvh,52rem)]');
+}
+
+function cnShell(...parts: string[]): string {
+  return parts.join(' ');
+}
+
+export const CAMERA_PREVIEW_SHELL_BASE_CLASS =
+  'relative mx-auto overflow-hidden rounded-3xl border border-cyan-400/20 bg-slate-950/60 shadow-[0_0_60px_rgba(31,213,249,0.12)]';
+
 export const DEFAULT_CAMERA_ASPECT_RATIO: CameraAspectRatio = '16:9';
