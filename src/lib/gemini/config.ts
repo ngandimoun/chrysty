@@ -180,6 +180,21 @@ export function getGeminiTtsFallbackVoice(): string {
   return process.env.GEMINI_TTS_FALLBACK_VOICE?.trim() || getGeminiTtsVoice();
 }
 
+export function isGeminiLiveEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_GEMINI_LIVE_ENABLED?.trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+export function getLiveWebSocketUrl(): string | null {
+  const url = process.env.NEXT_PUBLIC_LIVE_WS_URL?.trim();
+  return url || null;
+}
+
+export function isLiveJourneyDebugEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_DEBUG_LIVE_JOURNEY?.trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
 export function getGeminiApiKey(): string {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {

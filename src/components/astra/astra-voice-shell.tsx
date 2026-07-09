@@ -22,7 +22,10 @@ import { useCamera } from '@/hooks/use-camera';
 import { useGeneratedDocuments } from '@/hooks/use-generated-documents';
 import { useLiveGuide } from '@/hooks/use-live-guide';
 import { useVoiceAgent, type VisualCapture } from '@/hooks/use-voice-agent';
+import { useGeminiLive } from '@/hooks/use-gemini-live';
 import type { AppAgentPhase } from '@/lib/agent-state';
+import { isGeminiLiveEnabled } from '@/lib/gemini/config';
+import { toAuraStateFromLive } from '@/lib/agent-state';
 import {
   acquireLocalAudioTrack,
   getInsecureContextMessage,
@@ -42,6 +45,7 @@ import { hasSavableExplanationContent } from '@/lib/documents/save-explanation-a
 import { isPerceptionEnabled, PerceptionManager } from '@/lib/perception/manager';
 
 const showTranscript = process.env.NEXT_PUBLIC_SHOW_TRANSCRIPT === 'true';
+const geminiLiveEnabled = isGeminiLiveEnabled();
 
 const TranscriptSlot = showTranscript
   ? dynamic(() => import('@/components/astra/transcript-slot').then((mod) => mod.TranscriptSlot), {
@@ -360,24 +364,24 @@ export function AstraVoiceShell() {
 
   const {
     state: agentState,
-    isSpeaking,
-    explanation,
+    isSpeaking: httpIsSpeaking,
+    explanation: httpExplanation,
     timings,
     playbackBlocked,
     lastResponseAudio,
     toggleRecording,
     cancelRecording,
-    sendMonitorTurn,
-    sendBootstrapTurn,
+    sendMonitorTurn: httpSendMonitorTurn,
+    sendBootstrapTurn: httpSendBootstrapTurn,
     stopSpeaking,
     replayLastResponseAudio,
-    dismissExplanation,
+    dismissExplanation: httpDismissExplanation,
     clearLastResponseAudio,
-    reset: resetAgent,
+    reset: resetHttpAgent,
   } = useVoiceAgent({
     stream: audioTrack?.mediaStream,
     getStream: getAudioStream,
-    enabled: isConnected,
+    enabled: isConnected && !geminiLiveEnabled,
     onSpeakingStart: handleSpeakingStart,
     onSpeakingEnd: handleSpeakingEnd,
     onRecordingStart: handleRecordingStart,
@@ -388,6 +392,42 @@ export function AstraVoiceShell() {
     onLiveGuideSpeech: liveGuide.noteSpokenText,
   });
 
+  const {
+    phase: livePhase,
+    isModelSpeaking,
+    isSpeaking: liveIsSpeaking,
+    explanation: liveExplanation,
+    error: liveError,
+    connect: connectLive,
+    disconnect: disconnectLive,
+    dismissExplanation: liveDismissExplanation,
+    reset: resetLiveAgent,
+    sendMonitorTurn: liveSendMonitorTurn,
+    sendBootstrapTurn: liveSendBootstrapTurn,
+  } = useGeminiLive({
+    stream: audioTrack?.mediaStream,
+    getStream: getAudioStream,
+    enabled: geminiLiveEnabled,
+    onSpeakingStart: handleSpeakingStart,
+    onSpeakingEnd: handleSpeakingEnd,
+    getVisualCapture: getVisualCaptureWithLiveGuide,
+    getRequestMode: liveGuide.getRequestMode,
+    onLiveGuide: liveGuide.handleLiveGuideUpdate,
+    onLiveGuideSpeech: liveGuide.noteSpokenText,
+  });
+
+  const isSpeaking = geminiLiveEnabled ? liveIsSpeaking : httpIsSpeaking;
+  const explanation = geminiLiveEnabled ? liveExplanation : httpExplanation;
+  const sendMonitorTurn = geminiLiveEnabled ? liveSendMonitorTurn : httpSendMonitorTurn;
+  const sendBootstrapTurn = geminiLiveEnabled ? liveSendBootstrapTurn : httpSendBootstrapTurn;
+  const dismissExplanation = geminiLiveEnabled ? liveDismissExplanation : httpDismissExplanation;
+  const displayPhase: AppAgentPhase = geminiLiveEnabled
+    ? toAuraStateFromLive(livePhase, isModelSpeaking)
+    : phase;
+  const isSessionConnected = geminiLiveEnabled
+    ? livePhase !== 'idle' && livePhase !== 'error'
+    : isConnected;
+
   useEffect(() => {
     monitorSenderRef.current = sendMonitorTurn;
   }, [sendMonitorTurn]);
@@ -397,8 +437,17 @@ export function AstraVoiceShell() {
   }, [sendBootstrapTurn]);
 
   useEffect(() => {
-    agentBusyRef.current = agentState !== 'idle' || isSpeaking;
-  }, [agentState, isSpeaking]);
+    if (geminiLiveEnabled && liveError) {
+      setErrorMessage(liveError);
+      setErrorCode(undefined);
+    }
+  }, [liveError]);
+
+  useEffect(() => {
+    agentBusyRef.current = geminiLiveEnabled
+      ? livePhase === 'connecting' || livePhase === 'reconnecting' || isSpeaking
+      : agentState !== 'idle' || isSpeaking;
+  }, [agentState, geminiLiveEnabled, isSpeaking, livePhase]);
 
   const clearError = useCallback(() => {
     setErrorMessage(null);
@@ -437,13 +486,17 @@ export function AstraVoiceShell() {
 
   const handleDisconnect = useCallback(() => {
     exitLiveGuide();
+    if (geminiLiveEnabled) {
+      disconnectLive();
+    }
     teardownMic();
     stopPerception();
     closeCamera();
     clearLiveFocusAnnotations();
     clearPendingPhotos();
     stopSpeaking();
-    resetAgent();
+    resetHttpAgent();
+    resetLiveAgent();
     resetAudioSession();
     setPhase('idle');
     setSelectedAnnotationPhotoId(null);
@@ -456,16 +509,22 @@ export function AstraVoiceShell() {
     clearLiveFocusAnnotations,
     clearPendingPhotos,
     closeCamera,
+    disconnectLive,
     exitLiveGuide,
-    resetAgent,
+    resetHttpAgent,
+    resetLiveAgent,
     stopSpeaking,
     stopPerception,
     teardownMic,
   ]);
 
   const suspendSession = useCallback(() => {
-    if (agentState === 'recording') {
+    if (!geminiLiveEnabled && agentState === 'recording') {
       return;
+    }
+
+    if (geminiLiveEnabled) {
+      disconnectLive();
     }
 
     teardownMic();
@@ -479,6 +538,8 @@ export function AstraVoiceShell() {
     cancelFrameSampling,
     agentState,
     closeCamera,
+    disconnectLive,
+    geminiLiveEnabled,
     stopPerception,
     stopSpeaking,
     teardownMic,
@@ -489,7 +550,7 @@ export function AstraVoiceShell() {
   }, [suspendSession]);
 
   const handleToggleCamera = useCallback(async () => {
-    if (!isConnected || isBusy) return;
+    if (!isSessionConnected || isBusy) return;
 
     clearError();
     setIsBusy(true);
@@ -520,7 +581,7 @@ export function AstraVoiceShell() {
     clearLiveFocusAnnotations,
     closeCamera,
     isBusy,
-    isConnected,
+    isSessionConnected,
     openCamera,
     stopPerception,
   ]);
@@ -670,10 +731,33 @@ export function AstraVoiceShell() {
   );
 
   const handleToggleRecording = useCallback(async () => {
-    if (isBusy || agentState === 'processing') return;
+    if (isBusy || (!geminiLiveEnabled && agentState === 'processing')) return;
+
+    clearError();
+
+    if (geminiLiveEnabled) {
+      if (livePhase !== 'idle' && livePhase !== 'error') return;
+
+      setIsBusy(true);
+      let micReady = false;
+      try {
+        micReady = await ensureLiveMic();
+      } finally {
+        setIsBusy(false);
+      }
+      if (!micReady) return;
+
+      setIsBusy(true);
+      const result = await connectLive();
+      setIsBusy(false);
+      if (!result.ok) {
+        setErrorMessage(result.error ?? 'Could not connect to Live.');
+        setErrorCode(undefined);
+      }
+      return;
+    }
 
     const wasRecording = agentState === 'recording';
-    clearError();
 
     if (!wasRecording) {
       setIsBusy(true);
@@ -703,12 +787,21 @@ export function AstraVoiceShell() {
 
     if (wasRecording) {
       setPhase((current) => (current === 'thinking' ? 'listening' : current));
-      // A voice turn may have delegated a new background job — pick it up quickly.
       void refreshBackgroundJobs();
     } else {
       setPhase('listening');
     }
-  }, [agentState, clearError, ensureLiveMic, isBusy, refreshBackgroundJobs, toggleRecording]);
+  }, [
+    agentState,
+    clearError,
+    connectLive,
+    ensureLiveMic,
+    geminiLiveEnabled,
+    isBusy,
+    livePhase,
+    refreshBackgroundJobs,
+    toggleRecording,
+  ]);
 
   const handleCancelRecording = useCallback(async () => {
     if (agentState !== 'recording') return;
@@ -780,7 +873,9 @@ export function AstraVoiceShell() {
     !explanation.isStreaming &&
     hasSavableExplanationContent(explanation);
 
+  const showHttpPlayback = !geminiLiveEnabled;
   const showSaveAudio =
+    showHttpPlayback &&
     lastResponseAudio !== null &&
     lastResponseAudio.pcm.length > 0 &&
     !explanation.isStreaming;
@@ -873,7 +968,8 @@ export function AstraVoiceShell() {
     };
   }, []);
 
-  const isListening = phase === 'listening';
+  const isListening = displayPhase === 'listening';
+  const voiceAgentState = geminiLiveEnabled ? 'idle' : agentState;
 
   return (
     <main
@@ -913,7 +1009,7 @@ export function AstraVoiceShell() {
 
       <section className="relative z-10 flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 sm:gap-6">
         <VisualizerSlot
-          phase={phase}
+          phase={displayPhase}
           audioTrack={audioTrack}
           explanation={explanation}
           selectedDocument={selectedDocument}
@@ -988,7 +1084,7 @@ export function AstraVoiceShell() {
             Save audio
           </button>
         ) : null}
-        {playbackBlocked && lastResponseAudio ? (
+        {showHttpPlayback && playbackBlocked && lastResponseAudio ? (
           <button
             type="button"
             onClick={() => void replayLastResponseAudio()}
@@ -997,7 +1093,7 @@ export function AstraVoiceShell() {
             Tap to enable sound
           </button>
         ) : null}
-        <StatusLabel phase={isInsecureContext ? 'error' : phase} />
+        <StatusLabel phase={isInsecureContext ? 'error' : displayPhase} />
       </section>
 
       <footer className="relative z-20 flex w-full flex-col items-center gap-4">
@@ -1021,10 +1117,11 @@ export function AstraVoiceShell() {
           onDismiss={isInsecureContext ? undefined : clearError}
         />
         <VoiceControls
-          phase={isInsecureContext ? 'error' : phase}
+          phase={isInsecureContext ? 'error' : displayPhase}
           isBusy={isBusy}
           recordingDisabled={isInsecureContext}
-          agentState={agentState}
+          liveMode={geminiLiveEnabled}
+          agentState={voiceAgentState}
           cameraActive={cameraActive}
           unreadDocumentCount={unreadDocumentCount}
           onDisconnect={handleDisconnect}

@@ -23,6 +23,7 @@ interface VoiceControlsProps {
   phase: AppAgentPhase;
   isBusy: boolean;
   recordingDisabled?: boolean;
+  liveMode?: boolean;
   agentState: AgentState;
   cameraActive: boolean;
   unreadDocumentCount?: number;
@@ -37,6 +38,7 @@ export function VoiceControls({
   phase,
   isBusy,
   recordingDisabled = false,
+  liveMode = false,
   agentState,
   cameraActive,
   unreadDocumentCount = 0,
@@ -52,6 +54,19 @@ export function VoiceControls({
   const isActive = isRecording || (phase !== 'idle' && phase !== 'error');
   const isProcessing = agentState === 'processing' || (!isRecording && phase === 'thinking');
   const canRecord = isRecording || (phase !== 'connecting' && phase !== 'thinking');
+  const primaryActionLabel = liveMode
+    ? phase === 'connecting'
+      ? 'Connecting…'
+      : phase === 'idle' || phase === 'error'
+        ? 'Connect'
+        : 'Live'
+    : isRecording
+      ? 'Stop & send'
+      : isProcessing
+        ? 'Thinking…'
+        : phase === 'connecting'
+          ? 'Connecting…'
+          : 'Record';
   const documentsLabel =
     unreadDocumentCount > 0
       ? `Documents, ${unreadDocumentCount} unread`
@@ -122,7 +137,7 @@ export function VoiceControls({
       <Button
         type="button"
         size="lg"
-        disabled={recordingDisabled || !canRecord || isProcessing || isBusy}
+        disabled={recordingDisabled || !canRecord || isProcessing || isBusy || (liveMode && phase !== 'idle' && phase !== 'error')}
         onClick={onToggleRecording}
         className={cn(
           touchButtonClass,
@@ -132,7 +147,7 @@ export function VoiceControls({
             : 'min-w-56 rounded-full bg-primary text-primary-foreground hover:bg-primary/90',
         )}
       >
-        {isRecording ? 'Stop & send' : isProcessing ? 'Thinking…' : phase === 'connecting' ? 'Connecting…' : 'Record'}
+        {isRecording ? 'Stop & send' : primaryActionLabel}
       </Button>
     </div>
   );

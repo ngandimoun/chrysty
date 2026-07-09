@@ -1100,6 +1100,12 @@ export interface MultimodalImageInput {
 
 export type { DelegationPromptContext };
 
+export interface LivePipelineOptions {
+  /** Pre-transcribed user text from Gemini Live input transcription. */
+  transcriptOverride?: string;
+  skipStt?: boolean;
+}
+
 export async function buildVoiceResponseFromMultimodal(
   client: GoogleGenAI,
   audioBytes: Buffer,
@@ -1113,6 +1119,7 @@ export async function buildVoiceResponseFromMultimodal(
   memoryContext?: MemoryContext,
   delegation?: DelegationPromptContext,
   liveGuide?: LiveGuideTurnOptions,
+  livePipeline?: LivePipelineOptions,
 ): Promise<{
   payload: VoiceResponsePayload;
   ttsPrompt: string | null;
@@ -1124,7 +1131,10 @@ export async function buildVoiceResponseFromMultimodal(
   grounding: ToolGroundingResult;
 }> {
   const useTranscriptOverride = Boolean(
-    liveGuide?.transcriptOverride?.trim() || liveGuide?.monitor || liveGuide?.bootstrap,
+    livePipeline?.transcriptOverride?.trim() ||
+      liveGuide?.transcriptOverride?.trim() ||
+      liveGuide?.monitor ||
+      liveGuide?.bootstrap,
   );
 
   if (!useTranscriptOverride) {
@@ -1157,6 +1167,7 @@ export async function buildVoiceResponseFromMultimodal(
 
   if (useTranscriptOverride) {
     transcript =
+      livePipeline?.transcriptOverride?.trim() ||
       liveGuide?.transcriptOverride?.trim() ||
       (liveGuide?.bootstrap ? LIVE_GUIDE_BOOTSTRAP_TRANSCRIPT : LIVE_GUIDE_MONITOR_TRANSCRIPT);
   } else {

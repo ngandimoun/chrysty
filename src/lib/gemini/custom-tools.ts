@@ -21,6 +21,9 @@ export const CONVERT_TOOL = 'convert';
 export const RANDOM_CHOICE_TOOL = 'randomChoice';
 export const DELEGATE_BACKGROUND_TASK_TOOL = 'delegateBackgroundTask';
 
+/** Live-only handoff tool (implemented in chrysty-voice, not registered on Interactions LLM path). */
+export const DELEGATE_TO_STRUCTURED_LLM_TOOL = 'delegateToStructuredLLM';
+
 export interface DelegationToolContext {
   astraKey: string;
   workspaceId: string;
