@@ -26,8 +26,11 @@ function loadDatabaseUrl() {
 }
 
 const connectionString = loadDatabaseUrl();
+const normalized = connectionString.replace(/^postgresql:/, 'postgres:');
+const databaseUrl = new URL(normalized);
+databaseUrl.searchParams.delete('sslmode');
 const client = new pg.Client({
-  connectionString,
+  connectionString: databaseUrl.toString(),
   ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
 });
 
