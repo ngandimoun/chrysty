@@ -1,3 +1,5 @@
+import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
+
 export function pcmToWavBlob(pcm: Uint8Array, sampleRate: number, channels = 1): Blob {
   const bitsPerSample = 16;
   const blockAlign = (channels * bitsPerSample) / 8;
@@ -45,10 +47,5 @@ export function concatPcmChunks(chunks: Uint8Array[]): Uint8Array {
 }
 
 export function base64ToPcmBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+  return decodeBase64ToBytes(base64);
 }

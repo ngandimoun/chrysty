@@ -3,6 +3,7 @@ import {
   getSharedAudioContextState,
   unlockSharedAudioContextSync,
 } from '@/lib/audio/audio-context';
+import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
 
 const SAMPLE_RATE = 24000;
 const SCHEDULE_LEAD_SECONDS = 0.05;
@@ -12,15 +13,6 @@ const MAX_BUFFER_SECONDS = 5;
 
 export async function prewarmAudioContext(): Promise<void> {
   unlockSharedAudioContextSync();
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -188,7 +180,7 @@ export class StreamingAudioPlayer {
 
   private async enqueueInternal(chunk: StreamingAudioChunk): Promise<void> {
     this.inputEnded = false;
-    const bytes = base64ToBytes(chunk.data);
+    const bytes = decodeBase64ToBytes(chunk.data);
     this.sampleRate = chunk.sample_rate ?? SAMPLE_RATE;
 
     const aligned = this.appendAlignedPcm(bytes);
@@ -248,8 +240,7 @@ export class StreamingAudioPlayer {
 
   unlock(): Promise<void> {
     unlockSharedAudioContextSync('play-and-record');
-    this.chain = this.chain.then(() => this.ensureContext().then(() => undefined));
-    return this.chain;
+    return this.ensureContext().then(() => undefined);
   }
 
   stop(): void {

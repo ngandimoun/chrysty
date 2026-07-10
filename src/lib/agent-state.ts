@@ -11,13 +11,23 @@ export const LIVE_STATUS_LABELS: Record<LiveSessionPhase, string> = {
   error: 'Something went wrong',
 };
 
+export type AppAgentPhase =
+  | 'idle'
+  | 'connecting'
+  | 'reconnecting'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'error';
+
 export function toAuraStateFromLive(phase: LiveSessionPhase, isModelSpeaking: boolean): AppAgentPhase {
   switch (phase) {
     case 'idle':
       return 'idle';
     case 'connecting':
-    case 'reconnecting':
       return 'connecting';
+    case 'reconnecting':
+      return 'reconnecting';
     case 'live':
       return isModelSpeaking ? 'speaking' : 'listening';
     case 'error':
@@ -27,11 +37,10 @@ export function toAuraStateFromLive(phase: LiveSessionPhase, isModelSpeaking: bo
   }
 }
 
-export type AppAgentPhase = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
-
 export const STATUS_LABELS: Record<AppAgentPhase, string> = {
   idle: '',
   connecting: 'Connecting…',
+  reconnecting: 'Reconnecting…',
   listening: 'Listening…',
   thinking: 'Thinking…',
   speaking: 'Speaking…',
@@ -43,6 +52,7 @@ export function toAuraState(phase: AppAgentPhase): AgentState {
     case 'idle':
       return 'disconnected';
     case 'connecting':
+    case 'reconnecting':
       return 'thinking';
     case 'listening':
       return 'listening';

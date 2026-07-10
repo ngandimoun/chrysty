@@ -79,14 +79,22 @@ export interface LiveDelegationRecord {
 
 /** Client-bound WebSocket protocol (Cloud Run → Astra PWA). */
 export type LiveClientEvent =
+  | {
+      type: 'session_context_ready';
+      session_id: string;
+      mode: LiveSessionMode;
+      pending_turn_id?: string | null;
+    }
   | { type: 'connected'; session_id: string; mode: LiveSessionMode; pending_turn_id?: string | null }
   | { type: 'reconnecting' }
   | { type: 'audio'; data: string; sample_rate?: number }
+  | { type: 'turn_complete' }
+  | { type: 'interrupted' }
   | { type: 'delegation_started'; turn_id: string }
   | { type: 'simple_explanation'; text: string; turn_id?: string }
   | { type: 'live_guide_update'; live_guide: LiveGuideResponse | null; guidance_mode?: string }
   | { type: 'go_away'; resumption_handle?: string; time_left?: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; fatal?: boolean };
 
 export const DELEGATE_TO_STRUCTURED_LLM_TOOL = 'delegateToStructuredLLM';
 

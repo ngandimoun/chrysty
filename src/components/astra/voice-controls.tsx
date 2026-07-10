@@ -53,10 +53,12 @@ export function VoiceControls({
   const isRecording = agentState === 'recording';
   const isActive = isRecording || (phase !== 'idle' && phase !== 'error');
   const isProcessing = agentState === 'processing' || (!isRecording && phase === 'thinking');
-  const canRecord = isRecording || (phase !== 'connecting' && phase !== 'thinking');
+  const canRecord = isRecording || (phase !== 'connecting' && phase !== 'reconnecting' && phase !== 'thinking');
   const primaryActionLabel = liveMode
     ? phase === 'connecting'
       ? 'Connecting…'
+      : phase === 'reconnecting'
+        ? 'Reconnecting…'
       : phase === 'idle' || phase === 'error'
         ? 'Connect'
         : 'Live'

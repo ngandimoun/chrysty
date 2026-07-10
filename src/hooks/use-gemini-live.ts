@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { resolveActiveAstraKey, uploadAstraKeyHeaders } from '@/lib/astra/identity';
 import {
-  primeAudioForPlayback,
   primeAudioForVoiceSession,
   unlockSharedAudioContextSync,
 } from '@/lib/audio/audio-context';
@@ -35,6 +34,7 @@ import type { VisualCapture, VoiceRequestMode } from '@/hooks/use-voice-agent';
 
 const RECONNECT_DELAY_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 8;
+const CONNECT_TIMEOUT_MS = 25000;
 const FRAME_IDLE_INTERVAL_MS = 1000;
 const FRAME_SPEAKING_INTERVAL_MS = 400;
 
@@ -98,6 +98,11 @@ function clearResumptionHandle() {
   sessionStorage.removeItem(LIVE_RESUMPTION_STORAGE_KEY);
 }
 
+function clearStoredSessionId() {
+  if (typeof window === 'undefined') return;
+  sessionStorage.removeItem(LIVE_SESSION_STORAGE_KEY);
+}
+
 function liveUserId(astraKey: string): string {
   return astraKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'anonymous';
 }
@@ -132,14 +137,20 @@ export function useGeminiLive({
   const pcmCaptureRef = useRef<LivePcmCapture | null>(null);
   const playerRef = useRef<StreamingAudioPlayer | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const connectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const intentionalCloseRef = useRef(false);
+  const hadStableLiveSessionRef = useRef(false);
+  const resumeAfterGoAwayRef = useRef(false);
+  const pendingMediaStreamRef = useRef<MediaStream | null>(null);
   const delegationAbortRef = useRef<AbortController | null>(null);
   const activeDelegationTurnRef = useRef<string | null>(null);
   const explanationImageUrlsRef = useRef<string[]>([]);
   const frameTimerRef = useRef<number | null>(null);
   const lastFrameSentAtRef = useRef(0);
   const isModelSpeakingRef = useRef(false);
+  const handshakeCompleteRef = useRef(false);
+  const pendingAudioRef = useRef<Array<{ data: string; sample_rate: number }>>([]);
 
   useEffect(() => {
     isModelSpeakingRef.current = isModelSpeaking;
@@ -203,6 +214,31 @@ export function useGeminiLive({
     return playerRef.current;
   }, []);
 
+  const enqueueLiveAudio = useCallback(
+    (data: string, sampleRate: number) => {
+      void getPlayer().unlock();
+      void getPlayer()
+        .enqueue({
+          data,
+          sample_rate: sampleRate,
+        })
+        .catch((enqueueError) => {
+          debugLiveJourney('audio_enqueue_failed', {
+            message: enqueueError instanceof Error ? enqueueError.message : String(enqueueError),
+          });
+        });
+    },
+    [getPlayer],
+  );
+
+  const drainPendingAudio = useCallback(() => {
+    const pending = pendingAudioRef.current;
+    pendingAudioRef.current = [];
+    for (const chunk of pending) {
+      enqueueLiveAudio(chunk.data, chunk.sample_rate);
+    }
+  }, [enqueueLiveAudio]);
+
   const stopPcmCapture = useCallback(() => {
     pcmCaptureRef.current?.stop();
     pcmCaptureRef.current = null;
@@ -219,6 +255,10 @@ export function useGeminiLive({
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
+    }
+    if (connectTimeoutRef.current !== null) {
+      window.clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
     }
     const ws = wsRef.current;
     wsRef.current = null;
@@ -372,20 +412,31 @@ export function useGeminiLive({
   const handleClientEvent = useCallback(
     (event: LiveClientEvent) => {
       switch (event.type) {
+        case 'session_context_ready':
+          debugLiveJourney('session_context_ready', {
+            session_id: event.session_id,
+            mode: event.mode,
+          });
+          setPhase(reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting');
+          break;
         case 'connected':
-          debugLiveJourney('connected', { session_id: event.session_id, mode: event.mode });
-          setPhase('live');
-          reconnectAttemptsRef.current = 0;
-          if (event.pending_turn_id) {
-            void openDelegationStream(event.pending_turn_id);
-          }
-          startFrameTimer();
           break;
         case 'audio':
-          void getPlayer().enqueue({
-            data: event.data,
-            sample_rate: event.sample_rate ?? 24000,
-          });
+          if (!handshakeCompleteRef.current) {
+            pendingAudioRef.current.push({
+              data: event.data,
+              sample_rate: event.sample_rate ?? 24000,
+            });
+            break;
+          }
+          enqueueLiveAudio(event.data, event.sample_rate ?? 24000);
+          break;
+        case 'turn_complete':
+          void getPlayer().flush();
+          break;
+        case 'interrupted':
+          getPlayer().stop();
+          setIsModelSpeaking(false);
           break;
         case 'delegation_started':
           debugLiveJourney('delegation_started', { turn_id: event.turn_id });
@@ -393,20 +444,6 @@ export function useGeminiLive({
           break;
         case 'simple_explanation':
           onLiveGuideSpeechRef.current?.(event.text);
-          setExplanation({
-            active: true,
-            fullText: event.text,
-            isStreaming: false,
-            places: [],
-            charts: [],
-            codeImages: [],
-            stockImages: [],
-            webCitations: [],
-            customToolCalls: [],
-            physicalTask: null,
-            visualGuidance: null,
-            userImages: [],
-          });
           break;
         case 'live_guide_update':
           onLiveGuideRef.current?.({
@@ -421,11 +458,15 @@ export function useGeminiLive({
             time_left: event.time_left,
           });
           storeResumptionHandle(event.resumption_handle);
+          resumeAfterGoAwayRef.current = true;
           setPhase('reconnecting');
           break;
         case 'error':
           setError(event.message);
           setPhase('error');
+          intentionalCloseRef.current = true;
+          reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS;
+          closeWebSocket();
           break;
         case 'reconnecting':
           setPhase('reconnecting');
@@ -434,7 +475,35 @@ export function useGeminiLive({
           break;
       }
     },
-    [getPlayer, openDelegationStream, startFrameTimer],
+    [closeWebSocket, enqueueLiveAudio, openDelegationStream, startFrameTimer],
+  );
+
+  const finishConnectedHandshake = useCallback(
+    async (event: Extract<LiveClientEvent, { type: 'connected' }>) => {
+      debugLiveJourney('connected', { session_id: event.session_id, mode: event.mode });
+
+      const mediaStream = pendingMediaStreamRef.current;
+      if (!mediaStream) {
+        throw new Error('Microphone is not available.');
+      }
+
+      await getPlayer().unlock();
+      await startMicCapture(mediaStream);
+
+      handshakeCompleteRef.current = true;
+      drainPendingAudio();
+
+      hadStableLiveSessionRef.current = true;
+      reconnectAttemptsRef.current = 0;
+      resumeAfterGoAwayRef.current = false;
+      setPhase('live');
+
+      if (event.pending_turn_id) {
+        void openDelegationStream(event.pending_turn_id);
+      }
+      startFrameTimer();
+    },
+    [drainPendingAudio, getPlayer, openDelegationStream, startFrameTimer, startMicCapture],
   );
 
   const openWebSocket = useCallback(async (): Promise<ConnectResult> => {
@@ -455,13 +524,27 @@ export function useGeminiLive({
 
     primeAudioForVoiceSession();
     unlockSharedAudioContextSync('play-and-record');
-    await primeAudioForPlayback();
+
+    const isResumptionReconnect =
+      reconnectAttemptsRef.current > 0 && resumeAfterGoAwayRef.current;
+    if (!isResumptionReconnect) {
+      clearResumptionHandle();
+      clearStoredSessionId();
+    }
 
     const sessionId = getOrCreateSessionId();
     const userId = liveUserId(astraKey);
     const wsUrl = `${baseUrl.replace(/\/$/, '')}/ws/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`;
+    const resumptionHandle = isResumptionReconnect ? getStoredResumptionHandle() : null;
+
+    pendingMediaStreamRef.current = mediaStream;
+
+    handshakeCompleteRef.current = false;
+    pendingAudioRef.current = [];
+    getPlayer().stop();
 
     intentionalCloseRef.current = false;
+    hadStableLiveSessionRef.current = false;
     setPhase(reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting');
     setError(null);
 
@@ -474,41 +557,70 @@ export function useGeminiLive({
       const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
+      let connectedReceived = false;
+      let settled = false;
+
+      const settle = (result: ConnectResult) => {
+        if (settled) return;
+        settled = true;
+        if (connectTimeoutRef.current !== null) {
+          window.clearTimeout(connectTimeoutRef.current);
+          connectTimeoutRef.current = null;
+        }
+        resolve(result);
+      };
+
+      connectTimeoutRef.current = window.setTimeout(() => {
+        if (connectedReceived) return;
+        intentionalCloseRef.current = true;
+        setError('Live connection timed out.');
+        setPhase('error');
+        ws.close();
+        settle({ ok: false, error: 'Live connection timed out.' });
+      }, CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
-        void (async () => {
-          ws.send(
-            JSON.stringify({
-              type: 'init',
-              astra_key: astraKey,
-              mode,
-              companion_profile: companionProfile,
-              user_context: userContext,
-              resumption_handle: getStoredResumptionHandle(),
-            }),
-          );
-          try {
-            await startMicCapture(mediaStream);
-          } catch (captureError) {
-            const message =
-              captureError instanceof Error ? captureError.message : 'Could not start microphone capture.';
-            setError(message);
-            setPhase('error');
-            ws.close();
-            resolve({ ok: false, error: message });
-          }
-        })();
+        ws.send(
+          JSON.stringify({
+            type: 'init',
+            astra_key: astraKey,
+            mode,
+            companion_profile: companionProfile,
+            user_context: userContext,
+            resumption_handle: resumptionHandle,
+          }),
+        );
       };
 
       ws.onmessage = (message) => {
         if (typeof message.data !== 'string') return;
         try {
           const event = JSON.parse(message.data) as LiveClientEvent;
-          handleClientEvent(event);
           if (event.type === 'connected') {
-            resolve({ ok: true });
-          } else if (event.type === 'error') {
-            resolve({ ok: false, error: event.message });
+            void (async () => {
+              try {
+                await finishConnectedHandshake(event);
+                connectedReceived = true;
+                settle({ ok: true });
+              } catch (connectError) {
+                const connectMessage =
+                  connectError instanceof Error
+                    ? connectError.message
+                    : 'Could not start microphone capture.';
+                setError(connectMessage);
+                setPhase('error');
+                intentionalCloseRef.current = true;
+                reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS;
+                closeWebSocket();
+                settle({ ok: false, error: connectMessage });
+              }
+            })();
+            return;
+          }
+
+          handleClientEvent(event);
+          if (event.type === 'error') {
+            settle({ ok: false, error: event.message });
           }
         } catch {
           // Ignore malformed frames.
@@ -520,18 +632,24 @@ export function useGeminiLive({
           setError('Live connection failed.');
           setPhase('error');
         }
-        resolve({ ok: false, error: 'Live connection failed.' });
+        settle({ ok: false, error: 'Live connection failed.' });
       };
 
       ws.onclose = () => {
         wsRef.current = null;
+        pendingMediaStreamRef.current = null;
         stopPcmCapture();
         stopFrameTimer();
         getPlayer().stop();
         setIsModelSpeaking(false);
 
         if (intentionalCloseRef.current) {
-          setPhase('idle');
+          return;
+        }
+
+        if (!hadStableLiveSessionRef.current) {
+          setError((current) => current ?? 'Live connection failed.');
+          setPhase('error');
           return;
         }
 
@@ -542,13 +660,14 @@ export function useGeminiLive({
         }
 
         reconnectAttemptsRef.current += 1;
+        hadStableLiveSessionRef.current = false;
         setPhase('reconnecting');
         reconnectTimerRef.current = window.setTimeout(() => {
           void openWebSocket();
         }, RECONNECT_DELAY_MS);
       };
     });
-  }, [handleClientEvent, startMicCapture, stopFrameTimer, stopPcmCapture, stream]);
+  }, [closeWebSocket, finishConnectedHandshake, handleClientEvent, stopFrameTimer, stopPcmCapture, stream]);
 
   const connect = useCallback(async (): Promise<ConnectResult> => {
     if (!enabled) {
@@ -563,6 +682,11 @@ export function useGeminiLive({
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
     reconnectAttemptsRef.current = 0;
+    hadStableLiveSessionRef.current = false;
+    resumeAfterGoAwayRef.current = false;
+    pendingMediaStreamRef.current = null;
+    handshakeCompleteRef.current = false;
+    pendingAudioRef.current = [];
     clearResumptionHandle();
     stopDelegationStream();
     closeWebSocket();
@@ -596,6 +720,19 @@ export function useGeminiLive({
     },
     [sendImageOverSocket],
   );
+
+  useEffect(() => {
+    const onPageHide = () => {
+      intentionalCloseRef.current = true;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {

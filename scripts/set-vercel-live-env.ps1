@@ -1,15 +1,26 @@
 # Vercel production env for Gemini Live (chrysty.chrysty.dev)
 # Run from repo root after: npx vercel link
-# LIVE_SECRET: copy from chrysty-voice/app/.live-internal-secret (do not commit)
+# LIVE_SECRET: from chrysty-voice/app/.live-internal-secret or GCP Secret Manager
 
+param(
+    [switch]$FromGcp
+)
+
+$ErrorActionPreference = "Stop"
 $LiveWsUrl = "wss://chrysty-voice-591471981377.us-central1.run.app"
+$GCloud = "C:\Users\nchri\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 $SecretFile = "..\chrysty-voice\app\.live-internal-secret"
 
-if (-not (Test-Path $SecretFile)) {
-    throw "Missing $SecretFile — run chrysty-voice deploy script first."
+if ($FromGcp) {
+    $LiveSecret = (& $GCloud secrets versions access latest --secret=chrysty-voice-live-internal-secret --project=chrysty).Trim()
+    if (-not $LiveSecret) { throw "Could not read chrysty-voice-live-internal-secret from GCP." }
+    Set-Content -Path $SecretFile -Value $LiveSecret -NoNewline
+    Write-Host "Synced local secret file from GCP Secret Manager."
+} elseif (Test-Path $SecretFile) {
+    $LiveSecret = (Get-Content $SecretFile -Raw).Trim()
+} else {
+    throw "Missing $SecretFile - run chrysty-voice deploy script first or pass -FromGcp."
 }
-
-$LiveSecret = (Get-Content $SecretFile -Raw).Trim()
 
 function Set-VercelEnv([string]$Name, [string]$Value) {
     $Value | npx vercel env add $Name production --force
@@ -18,7 +29,6 @@ function Set-VercelEnv([string]$Name, [string]$Value) {
 
 Set-VercelEnv "NEXT_PUBLIC_LIVE_WS_URL" $LiveWsUrl
 Set-VercelEnv "LIVE_SERVICE_INTERNAL_SECRET" $LiveSecret
-Set-VercelEnv "NEXT_PUBLIC_GEMINI_LIVE_ENABLED" "false"
 Set-VercelEnv "GEMINI_TTS_VOICE" "Aoede"
 
-Write-Host "Vercel production env updated. Redeploy chrysty on Vercel, then smoke test before enabling Live."
+Write-Host "Vercel production env updated. Redeploy chrysty on Vercel before testing Live."
