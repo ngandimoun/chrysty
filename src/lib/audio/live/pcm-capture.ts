@@ -1,4 +1,6 @@
 const CAPTURE_SAMPLE_RATE = 16000;
+const CHUNK_SAMPLES = 320;
+const DIAGNOSTIC_INTERVAL_MS = 2000;
 
 function float32ToPcm16(input: Float32Array): ArrayBuffer {
   const pcm16 = new Int16Array(input.length);
@@ -14,22 +16,35 @@ function float32ToPcm16(input: Float32Array): ArrayBuffer {
  * upstream audio as 16 kHz, so anything else must be resampled here or
  * Gemini hears sped-up gibberish.
  */
-function resampleLinear(input: Float32Array, fromRate: number, toRate: number): Float32Array {
-  if (fromRate === toRate || input.length === 0) {
-    return input;
+class StatefulLinearResampler {
+  private buffered = new Float32Array(0);
+  private position = 0;
+
+  constructor(
+    private readonly fromRate: number,
+    private readonly toRate: number,
+  ) {}
+
+  process(input: Float32Array): Float32Array {
+    if (this.fromRate === this.toRate || input.length === 0) return input;
+    const combined = new Float32Array(this.buffered.length + input.length);
+    combined.set(this.buffered);
+    combined.set(input, this.buffered.length);
+
+    const ratio = this.fromRate / this.toRate;
+    const output: number[] = [];
+    while (this.position + 1 < combined.length) {
+      const left = Math.floor(this.position);
+      const fraction = this.position - left;
+      output.push(combined[left] + (combined[left + 1] - combined[left]) * fraction);
+      this.position += ratio;
+    }
+
+    const consumed = Math.floor(this.position);
+    this.buffered = combined.slice(consumed);
+    this.position -= consumed;
+    return Float32Array.from(output);
   }
-  const ratio = fromRate / toRate;
-  const outputLength = Math.max(1, Math.floor(input.length / ratio));
-  const output = new Float32Array(outputLength);
-  for (let i = 0; i < outputLength; i++) {
-    const position = i * ratio;
-    const index = Math.floor(position);
-    const fraction = position - index;
-    const current = input[index];
-    const next = index + 1 < input.length ? input[index + 1] : current;
-    output[i] = current + (next - current) * fraction;
-  }
-  return output;
 }
 
 export interface LivePcmCapture {
@@ -40,6 +55,11 @@ export async function startLivePcmCapture(
   stream: MediaStream,
   onPcmChunk: (chunk: ArrayBuffer) => void,
 ): Promise<LivePcmCapture> {
+  const track = stream.getAudioTracks().find((candidate) => candidate.readyState === 'live');
+  if (!track || !track.enabled) {
+    throw new Error('Microphone track is not live.');
+  }
+
   let context: AudioContext;
   try {
     context = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
@@ -59,6 +79,13 @@ export async function startLivePcmCapture(
 
   const actualRate = context.sampleRate;
   const needsResample = actualRate !== CAPTURE_SAMPLE_RATE;
+  const resampler = new StatefulLinearResampler(actualRate, CAPTURE_SAMPLE_RATE);
+  let pendingSamples = new Float32Array(0);
+  let diagnosticStartedAt = performance.now();
+  let diagnosticSquareSum = 0;
+  let diagnosticPeak = 0;
+  let diagnosticSampleCount = 0;
+  let emittedChunks = 0;
   console.info('[live-capture] mic context sample rate', {
     requested: CAPTURE_SAMPLE_RATE,
     actual: actualRate,
@@ -66,21 +93,63 @@ export async function startLivePcmCapture(
   });
 
   const source = context.createMediaStreamSource(stream);
-  const node = new AudioWorkletNode(context, 'pcm-recorder-processor');
+  const node = new AudioWorkletNode(context, 'pcm-recorder-processor', {
+    channelCount: 1,
+    channelCountMode: 'explicit',
+  });
+  const silentSink = context.createGain();
+  silentSink.gain.value = 0;
   node.port.onmessage = (event: MessageEvent<Float32Array>) => {
-    const samples = needsResample
-      ? resampleLinear(event.data, actualRate, CAPTURE_SAMPLE_RATE)
-      : event.data;
-    onPcmChunk(float32ToPcm16(samples));
+    const samples = needsResample ? resampler.process(event.data) : event.data;
+    if (samples.length === 0) return;
+
+    const combined = new Float32Array(pendingSamples.length + samples.length);
+    combined.set(pendingSamples);
+    combined.set(samples, pendingSamples.length);
+    let offset = 0;
+    while (combined.length - offset >= CHUNK_SAMPLES) {
+      const chunk = combined.slice(offset, offset + CHUNK_SAMPLES);
+      for (const sample of chunk) {
+        const magnitude = Math.abs(sample);
+        diagnosticSquareSum += sample * sample;
+        diagnosticPeak = Math.max(diagnosticPeak, magnitude);
+      }
+      diagnosticSampleCount += chunk.length;
+      onPcmChunk(float32ToPcm16(chunk));
+      emittedChunks += 1;
+      offset += CHUNK_SAMPLES;
+    }
+    pendingSamples = combined.slice(offset);
+
+    const now = performance.now();
+    if (now - diagnosticStartedAt >= DIAGNOSTIC_INTERVAL_MS) {
+      console.info('[live-capture] signal', {
+        rms:
+          diagnosticSampleCount > 0
+            ? Math.sqrt(diagnosticSquareSum / diagnosticSampleCount).toFixed(4)
+            : '0.0000',
+        peak: diagnosticPeak.toFixed(4),
+        emittedChunks,
+        trackMuted: track.muted,
+        trackReadyState: track.readyState,
+      });
+      diagnosticStartedAt = now;
+      diagnosticSquareSum = 0;
+      diagnosticPeak = 0;
+      diagnosticSampleCount = 0;
+    }
   };
 
   source.connect(node);
+  node.connect(silentSink);
+  silentSink.connect(context.destination);
 
   return {
     stop() {
       node.port.onmessage = null;
       source.disconnect();
       node.disconnect();
+      silentSink.disconnect();
       void context.close();
     },
   };

@@ -106,6 +106,7 @@ export async function acquireLocalAudioTrack(): Promise<LocalAudioTrack> {
 
   try {
     return await createLocalAudioTrack({
+      channelCount: 1,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,

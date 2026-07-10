@@ -13,8 +13,15 @@ function formatMs(value: number): string {
 }
 
 export function TranscriptSlot({ chunks = [], timings = null }: TranscriptSlotProps) {
-  const latest = chunks.at(-1)?.text ?? '';
-  const isStreaming = chunks.at(-1)?.isFinal === false;
+  const latestChunk = chunks.at(-1);
+  const latest = latestChunk?.text ?? '';
+  const isStreaming = latestChunk?.isFinal === false;
+  const speaker =
+    latestChunk?.role === 'user'
+      ? 'You'
+      : latestChunk?.role === 'assistant'
+        ? 'Chrysty'
+        : 'Transcript';
 
   if (!latest && !timings) {
     return null;
@@ -31,7 +38,8 @@ export function TranscriptSlot({ chunks = [], timings = null }: TranscriptSlotPr
       {latest ? (
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-            Transcript{isStreaming ? ' (streaming…)' : ''}
+            {speaker}
+            {isStreaming ? ' (listening…)' : ''}
           </p>
           <p className="mt-2 text-sm leading-6 text-foreground">{latest}</p>
         </div>

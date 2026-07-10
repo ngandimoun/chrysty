@@ -8,7 +8,7 @@ import {
   unlockSharedAudioContextSync,
 } from '@/lib/audio/audio-context';
 import { startLivePcmCapture, type LivePcmCapture } from '@/lib/audio/live/pcm-capture';
-import { StreamingAudioPlayer } from '@/lib/audio/streaming-player';
+import { LivePcmPlayer } from '@/lib/audio/live/pcm-player';
 import { loadCompanionProfileForRequest } from '@/lib/client/append-reference-documents';
 import { collectUserContextForRequest } from '@/lib/client/collect-user-context';
 import { getLiveWebSocketUrl, isLiveJourneyDebugEnabled } from '@/lib/gemini/config';
@@ -28,6 +28,7 @@ import {
   type ExplanationState,
   type GuidanceImage,
   type LiveGuideUpdate,
+  type TranscriptChunk,
 } from '@/lib/streaming/types';
 
 import type { VisualCapture, VoiceRequestMode } from '@/hooks/use-voice-agent';
@@ -60,7 +61,9 @@ export interface UseGeminiLiveResult {
   isModelSpeaking: boolean;
   isSpeaking: boolean;
   explanation: ExplanationState;
+  transcriptChunks: TranscriptChunk[];
   error: string | null;
+  prepareAudio: () => Promise<void>;
   connect: () => Promise<ConnectResult>;
   disconnect: () => void;
   dismissExplanation: () => void;
@@ -131,11 +134,13 @@ export function useGeminiLive({
   const [phase, setPhase] = useState<LiveSessionPhase>('idle');
   const [isModelSpeaking, setIsModelSpeaking] = useState(false);
   const [explanation, setExplanation] = useState<ExplanationState>(EMPTY_EXPLANATION);
+  const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const openWebSocketRef = useRef<(() => Promise<ConnectResult>) | null>(null);
   const pcmCaptureRef = useRef<LivePcmCapture | null>(null);
-  const playerRef = useRef<StreamingAudioPlayer | null>(null);
+  const playerRef = useRef<LivePcmPlayer | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const connectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -200,7 +205,7 @@ export function useGeminiLive({
 
   const getPlayer = useCallback(() => {
     if (!playerRef.current) {
-      const player = new StreamingAudioPlayer();
+      const player = new LivePcmPlayer();
       player.setOnFirstAudio(() => {
         setIsModelSpeaking(true);
         onSpeakingStartRef.current?.();
@@ -216,7 +221,6 @@ export function useGeminiLive({
 
   const enqueueLiveAudio = useCallback(
     (data: string, sampleRate: number) => {
-      void getPlayer().unlock();
       void getPlayer()
         .enqueue({
           data,
@@ -409,6 +413,39 @@ export function useGeminiLive({
     [stopPcmCapture],
   );
 
+  const updateTranscription = useCallback(
+    (role: 'user' | 'assistant', text: string, finished: boolean) => {
+      if (!text) return;
+      setTranscriptChunks((current) => {
+        const activeIndex = current.findLastIndex(
+          (chunk) => chunk.role === role && !chunk.isFinal,
+        );
+        if (activeIndex < 0) {
+          return [
+            ...current,
+            {
+              id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role,
+              text,
+              isFinal: finished,
+              createdAt: Date.now(),
+            },
+          ];
+        }
+
+        const updated = [...current];
+        const active = updated[activeIndex];
+        updated[activeIndex] = {
+          ...active,
+          text: finished ? text : active.text + text,
+          isFinal: finished,
+        };
+        return updated;
+      });
+    },
+    [],
+  );
+
   const handleClientEvent = useCallback(
     (event: LiveClientEvent) => {
       switch (event.type) {
@@ -431,12 +468,21 @@ export function useGeminiLive({
           }
           enqueueLiveAudio(event.data, event.sample_rate ?? 24000);
           break;
+        case 'input_transcription':
+          updateTranscription('user', event.text, event.finished);
+          break;
+        case 'output_transcription':
+          updateTranscription('assistant', event.text, event.finished);
+          break;
         case 'turn_complete':
-          void getPlayer().flush();
+          getPlayer().finishTurn();
           break;
         case 'interrupted':
-          getPlayer().stop();
+          getPlayer().clear();
           setIsModelSpeaking(false);
+          setTranscriptChunks((current) =>
+            current.map((chunk) => (chunk.isFinal ? chunk : { ...chunk, isFinal: true })),
+          );
           break;
         case 'delegation_started':
           debugLiveJourney('delegation_started', { turn_id: event.turn_id });
@@ -475,7 +521,7 @@ export function useGeminiLive({
           break;
       }
     },
-    [closeWebSocket, enqueueLiveAudio, openDelegationStream, startFrameTimer],
+    [closeWebSocket, enqueueLiveAudio, getPlayer, openDelegationStream, updateTranscription],
   );
 
   const finishConnectedHandshake = useCallback(
@@ -487,7 +533,6 @@ export function useGeminiLive({
         throw new Error('Microphone is not available.');
       }
 
-      await getPlayer().unlock();
       await startMicCapture(mediaStream);
 
       handshakeCompleteRef.current = true;
@@ -503,7 +548,7 @@ export function useGeminiLive({
       }
       startFrameTimer();
     },
-    [drainPendingAudio, getPlayer, openDelegationStream, startFrameTimer, startMicCapture],
+    [drainPendingAudio, openDelegationStream, startFrameTimer, startMicCapture],
   );
 
   const openWebSocket = useCallback(async (): Promise<ConnectResult> => {
@@ -524,6 +569,13 @@ export function useGeminiLive({
 
     primeAudioForVoiceSession();
     unlockSharedAudioContextSync('play-and-record');
+    try {
+      await getPlayer().initialize();
+    } catch (playerError) {
+      const message =
+        playerError instanceof Error ? playerError.message : 'Could not initialize Live audio.';
+      return { ok: false, error: message };
+    }
 
     const isResumptionReconnect =
       reconnectAttemptsRef.current > 0 && resumeAfterGoAwayRef.current;
@@ -541,7 +593,8 @@ export function useGeminiLive({
 
     handshakeCompleteRef.current = false;
     pendingAudioRef.current = [];
-    getPlayer().stop();
+    getPlayer().clear();
+    setTranscriptChunks([]);
 
     intentionalCloseRef.current = false;
     hadStableLiveSessionRef.current = false;
@@ -640,7 +693,7 @@ export function useGeminiLive({
         pendingMediaStreamRef.current = null;
         stopPcmCapture();
         stopFrameTimer();
-        getPlayer().stop();
+        getPlayer().clear();
         setIsModelSpeaking(false);
 
         if (intentionalCloseRef.current) {
@@ -663,11 +716,22 @@ export function useGeminiLive({
         hadStableLiveSessionRef.current = false;
         setPhase('reconnecting');
         reconnectTimerRef.current = window.setTimeout(() => {
-          void openWebSocket();
+          void openWebSocketRef.current?.();
         }, RECONNECT_DELAY_MS);
       };
     });
-  }, [closeWebSocket, finishConnectedHandshake, handleClientEvent, stopFrameTimer, stopPcmCapture, stream]);
+  }, [
+    closeWebSocket,
+    finishConnectedHandshake,
+    getPlayer,
+    handleClientEvent,
+    stopFrameTimer,
+    stopPcmCapture,
+    stream,
+  ]);
+  useEffect(() => {
+    openWebSocketRef.current = openWebSocket;
+  }, [openWebSocket]);
 
   const connect = useCallback(async (): Promise<ConnectResult> => {
     if (!enabled) {
@@ -678,6 +742,8 @@ export function useGeminiLive({
     }
     return openWebSocket();
   }, [enabled, openWebSocket]);
+
+  const prepareAudio = useCallback(() => getPlayer().initialize(), [getPlayer]);
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
@@ -692,8 +758,9 @@ export function useGeminiLive({
     closeWebSocket();
     stopPcmCapture();
     stopFrameTimer();
-    getPlayer().stop();
+    getPlayer().clear();
     setIsModelSpeaking(false);
+    setTranscriptChunks([]);
     setPhase('idle');
   }, [closeWebSocket, getPlayer, stopDelegationStream, stopFrameTimer, stopPcmCapture]);
 
@@ -735,12 +802,6 @@ export function useGeminiLive({
   }, []);
 
   useEffect(() => {
-    if (!enabled) {
-      reset();
-    }
-  }, [enabled, reset]);
-
-  useEffect(() => {
     return () => {
       intentionalCloseRef.current = true;
       closeWebSocket();
@@ -758,7 +819,9 @@ export function useGeminiLive({
     isModelSpeaking,
     isSpeaking: isModelSpeaking,
     explanation,
+    transcriptChunks,
     error,
+    prepareAudio,
     connect,
     disconnect,
     dismissExplanation,

@@ -47,7 +47,7 @@ import { isPerceptionEnabled, PerceptionManager } from '@/lib/perception/manager
 const showTranscript = process.env.NEXT_PUBLIC_SHOW_TRANSCRIPT === 'true';
 const geminiLiveEnabled = isGeminiLiveEnabled();
 
-const TranscriptSlot = showTranscript
+const TranscriptSlot = showTranscript || geminiLiveEnabled
   ? dynamic(() => import('@/components/astra/transcript-slot').then((mod) => mod.TranscriptSlot), {
       ssr: false,
     })
@@ -397,7 +397,9 @@ export function AstraVoiceShell() {
     isModelSpeaking,
     isSpeaking: liveIsSpeaking,
     explanation: liveExplanation,
+    transcriptChunks: liveTranscriptChunks,
     error: liveError,
+    prepareAudio: prepareLiveAudio,
     connect: connectLive,
     disconnect: disconnectLive,
     dismissExplanation: liveDismissExplanation,
@@ -738,6 +740,10 @@ export function AstraVoiceShell() {
     if (geminiLiveEnabled) {
       if (livePhase !== 'idle' && livePhase !== 'error') return;
 
+      const audioPreparation = prepareLiveAudio().then(
+        () => null,
+        (preparationError: unknown) => preparationError,
+      );
       setIsBusy(true);
       let micReady = false;
       try {
@@ -746,6 +752,15 @@ export function AstraVoiceShell() {
         setIsBusy(false);
       }
       if (!micReady) return;
+      const preparationError = await audioPreparation;
+      if (preparationError) {
+        setErrorMessage(
+          preparationError instanceof Error
+            ? preparationError.message
+            : 'Could not initialize Live audio.',
+        );
+        return;
+      }
 
       setIsBusy(true);
       const result = await connectLive();
@@ -799,6 +814,7 @@ export function AstraVoiceShell() {
     geminiLiveEnabled,
     isBusy,
     livePhase,
+    prepareLiveAudio,
     refreshBackgroundJobs,
     toggleRecording,
   ]);
@@ -1110,7 +1126,12 @@ export function AstraVoiceShell() {
             onSave={handleSaveAnnotation}
           />
         ) : null}
-        {TranscriptSlot ? <TranscriptSlot chunks={[]} timings={null} /> : null}
+        {TranscriptSlot ? (
+          <TranscriptSlot
+            chunks={geminiLiveEnabled ? liveTranscriptChunks : []}
+            timings={null}
+          />
+        ) : null}
         <AudioErrorBanner
           message={insecureContextMessage ?? errorMessage}
           code={isInsecureContext ? 'insecure-context' : errorCode}

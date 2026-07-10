@@ -88,6 +88,8 @@ export type LiveClientEvent =
   | { type: 'connected'; session_id: string; mode: LiveSessionMode; pending_turn_id?: string | null }
   | { type: 'reconnecting' }
   | { type: 'audio'; data: string; sample_rate?: number }
+  | { type: 'input_transcription'; text: string; finished: boolean }
+  | { type: 'output_transcription'; text: string; finished: boolean }
   | { type: 'turn_complete' }
   | { type: 'interrupted' }
   | { type: 'delegation_started'; turn_id: string }
