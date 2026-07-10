@@ -52,7 +52,10 @@ export async function GET(request: Request) {
   return NextResponse.json({
     turn_id: delegation.turn_id,
     status: delegation.status,
+    stage: delegation.stage,
     spoken_summary: delegation.spoken_summary,
     error_message: delegation.error_message,
+    error_code: delegation.error_code,
+    error_stage: delegation.error_stage,
   });
 }

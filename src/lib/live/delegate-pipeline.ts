@@ -15,6 +15,10 @@ import { filterRelevantVisualImageGroupRequests } from '@/lib/visuals/stock-imag
 import type { MemoryContext } from '@/lib/mem0/types';
 import type { UserEcosystemActivity } from '@/lib/astra/ecosystem-activity';
 import { encodeSseEvent } from '@/lib/live/sse';
+import type {
+  LiveDelegationResult,
+  LiveDelegationStage,
+} from '@/lib/live/types';
 
 export interface LiveDelegateStreamContext {
   turn_id: string;
@@ -26,6 +30,7 @@ export interface LiveDelegateStreamContext {
   delegation?: DelegationPromptContext;
   ecosystemActivity?: UserEcosystemActivity | null;
   liveGuide?: LiveGuideTurnOptions;
+  onStage?: (stage: LiveDelegationStage) => void | Promise<void>;
 }
 
 function buildVisualGuidanceFromPhysicalTask(
@@ -58,8 +63,14 @@ export async function streamLiveDelegationToEncoder(
   encoder: TextEncoder,
   enqueue: (chunk: Uint8Array) => void,
   context: LiveDelegateStreamContext,
-): Promise<{ spoken_summary: string; transcript: string }> {
+): Promise<{ spoken_summary: string; transcript: string; result: LiveDelegationResult }> {
   const pipelineStartedAt = performance.now();
+  const emitStage = async (stage: LiveDelegationStage) => {
+    enqueue(encoder.encode(encodeSseEvent('delegation_progress', { turn_id: context.turn_id, stage })));
+    await context.onStage?.(stage);
+  };
+
+  await emitStage('analyzing');
 
   const { payload, transcript, grounding } = await buildVoiceResponseFromMultimodal(
     client,
@@ -74,7 +85,7 @@ export async function streamLiveDelegationToEncoder(
     context.memoryContext,
     context.delegation,
     context.liveGuide,
-    { transcriptOverride: context.transcript, skipStt: true },
+    { transcriptOverride: context.transcript, skipStt: true, onProgress: emitStage },
   );
 
   const places = grounding.places;
@@ -144,6 +155,7 @@ export async function streamLiveDelegationToEncoder(
   }
 
   if (showExplanation) {
+    await emitStage('preparing_visuals');
     enqueue(
       encoder.encode(
         encodeSseEvent('explanation_start', {
@@ -212,23 +224,43 @@ export async function streamLiveDelegationToEncoder(
   }
 
   const spokenSummary = payload.spoken_transcript.trim();
+  const timings = {
+    sttMs: 0,
+    llmMs: 0,
+    ttsMs: 0,
+    ttsFirstAudioMs: null,
+    totalMs: performance.now() - pipelineStartedAt,
+    audioDurationMs: 0,
+  };
+  const result: LiveDelegationResult = {
+    explanation_text: explanationText,
+    show_explanation: showExplanation,
+    visuals: {
+      places,
+      charts,
+      physicalTask,
+      visualGuidance,
+      codeImages,
+      stockImages,
+      webCitations,
+      customToolCalls,
+    },
+    spoken_summary: spokenSummary,
+    timings,
+    live_guide: liveGuide,
+    guidance_mode: guidanceMode,
+  };
 
   enqueue(
     encoder.encode(
       encodeSseEvent('done', {
         turn_id: context.turn_id,
         spoken_transcript: spokenSummary,
-        timings: {
-          sttMs: 0,
-          llmMs: 0,
-          ttsMs: 0,
-          ttsFirstAudioMs: null,
-          totalMs: performance.now() - pipelineStartedAt,
-          audioDurationMs: 0,
-        },
+        timings,
       }),
     ),
   );
 
-  return { spoken_summary: spokenSummary, transcript };
+  await context.onStage?.('completed');
+  return { spoken_summary: spokenSummary, transcript, result };
 }

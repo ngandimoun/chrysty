@@ -1,6 +1,8 @@
 import type { CompanionProfile } from '@/lib/gemini/companion-profile';
+import type { ResponseTimings } from '@/lib/gemini/config';
 import type { LiveGuideResponse } from '@/lib/gemini/voice-response-schema';
 import type { UserContext } from '@/lib/gemini/user-context';
+import type { ExplanationVisuals } from '@/lib/streaming/types';
 
 export type LiveSessionMode = 'default' | 'live_guide';
 
@@ -62,6 +64,27 @@ export interface LiveDelegateAck {
 }
 
 export type LiveDelegationStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type LiveDelegationStage =
+  | 'queued'
+  | 'analyzing'
+  | 'using_search'
+  | 'using_maps'
+  | 'reading_source'
+  | 'using_custom_tool'
+  | 'running_code'
+  | 'preparing_visuals'
+  | 'completed'
+  | 'failed';
+
+export interface LiveDelegationResult {
+  explanation_text: string;
+  show_explanation: boolean;
+  visuals: ExplanationVisuals;
+  spoken_summary: string;
+  timings: ResponseTimings;
+  live_guide?: LiveGuideResponse | null;
+  guidance_mode?: string;
+}
 
 export interface LiveDelegationRecord {
   turn_id: string;
@@ -71,8 +94,12 @@ export interface LiveDelegationRecord {
   user_id?: string;
   status: LiveDelegationStatus;
   request: LiveDelegateRequest;
+  stage?: LiveDelegationStage | null;
+  result?: LiveDelegationResult | null;
   spoken_summary?: string | null;
   error_message?: string | null;
+  error_code?: string | null;
+  error_stage?: LiveDelegationStage | null;
   created_at: string;
   updated_at: string;
 }
@@ -93,6 +120,12 @@ export type LiveClientEvent =
   | { type: 'turn_complete' }
   | { type: 'interrupted' }
   | { type: 'delegation_started'; turn_id: string }
+  | {
+      type: 'delegation_status';
+      turn_id: string;
+      stage: LiveDelegationStage;
+      error_code?: string;
+    }
   | { type: 'simple_explanation'; text: string; turn_id?: string }
   | { type: 'live_guide_update'; live_guide: LiveGuideResponse | null; guidance_mode?: string }
   | { type: 'go_away'; resumption_handle?: string; time_left?: string }

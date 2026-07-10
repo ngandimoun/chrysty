@@ -1,6 +1,15 @@
 import { createUntypedAdminClient } from '@/lib/supabase/admin';
 
-import type { LiveDelegationRecord, LiveDelegationStatus, LiveDelegateRequest, LiveSessionMode, LiveSessionStateRecord, LiveGuideSessionState } from '@/lib/live/types';
+import type {
+  LiveDelegationRecord,
+  LiveDelegationStage,
+  LiveDelegationStatus,
+  LiveDelegateRequest,
+  LiveDelegationResult,
+  LiveSessionMode,
+  LiveSessionStateRecord,
+  LiveGuideSessionState,
+} from '@/lib/live/types';
 
 function rowToSession(row: Record<string, unknown>): LiveSessionStateRecord {
   return {
@@ -93,8 +102,12 @@ function rowToDelegation(row: Record<string, unknown>): LiveDelegationRecord {
     user_id: row.user_id ? String(row.user_id) : undefined,
     status: String(row.status) as LiveDelegationStatus,
     request: row.request as LiveDelegateRequest,
+    stage: row.stage ? (String(row.stage) as LiveDelegationStage) : null,
+    result: (row.result as LiveDelegationResult | null) ?? null,
     spoken_summary: row.spoken_summary ? String(row.spoken_summary) : null,
     error_message: row.error_message ? String(row.error_message) : null,
+    error_code: row.error_code ? String(row.error_code) : null,
+    error_stage: row.error_stage ? (String(row.error_stage) as LiveDelegationStage) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
@@ -118,6 +131,7 @@ export async function createLiveDelegation(input: {
         astra_key: input.astra_key,
         user_id: input.user_id ?? null,
         status: 'queued',
+        stage: 'queued',
         request: input.request,
       })
       .select('*')
@@ -148,7 +162,18 @@ export async function getLiveDelegation(turnId: string): Promise<LiveDelegationR
 
 export async function updateLiveDelegation(
   turnId: string,
-  patch: Partial<Pick<LiveDelegationRecord, 'status' | 'spoken_summary' | 'error_message'>>,
+  patch: Partial<
+    Pick<
+      LiveDelegationRecord,
+      | 'status'
+      | 'stage'
+      | 'result'
+      | 'spoken_summary'
+      | 'error_message'
+      | 'error_code'
+      | 'error_stage'
+    >
+  >,
 ): Promise<void> {
   try {
     await createUntypedAdminClient()
@@ -157,5 +182,19 @@ export async function updateLiveDelegation(
       .eq('turn_id', turnId);
   } catch (error) {
     console.error('[live-delegations] update failed', error);
+  }
+}
+
+export async function updateLiveDelegationRequest(
+  turnId: string,
+  request: LiveDelegateRequest,
+): Promise<void> {
+  try {
+    await createUntypedAdminClient()
+      .from('astra_live_delegations')
+      .update({ request, updated_at: new Date().toISOString() })
+      .eq('turn_id', turnId);
+  } catch (error) {
+    console.error('[live-delegations] request update failed', error);
   }
 }

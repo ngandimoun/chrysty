@@ -117,7 +117,6 @@ export function VisualizerSlot({
   liveGuideOverlay,
 }: VisualizerSlotProps) {
   const showExplanation =
-    !liveGuideActive &&
     explanation.active &&
     (explanation.fullText.length > 0 ||
       explanation.places.length > 0 ||

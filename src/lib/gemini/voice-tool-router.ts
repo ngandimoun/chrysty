@@ -29,6 +29,19 @@ const TOOL_ROUTER_JSON_SCHEMA = {
     url_context: { type: 'boolean' },
     code_execution: { type: 'boolean' },
     custom_tools: { type: 'boolean' },
+    task_class: {
+      type: 'string',
+      enum: ['conversation', 'vision', 'compute', 'web', 'geo', 'structured', 'background'],
+    },
+    execution_lane: {
+      type: 'string',
+      enum: ['immediate', 'structured', 'background'],
+    },
+    response_surface: {
+      type: 'string',
+      enum: ['voice', 'camera', 'canvas', 'document'],
+    },
+    requires_chart: { type: 'boolean' },
     reasoning: { type: 'string' },
   },
   required: [
@@ -37,12 +50,42 @@ const TOOL_ROUTER_JSON_SCHEMA = {
     'url_context',
     'code_execution',
     'custom_tools',
+    'task_class',
+    'execution_lane',
+    'response_surface',
+    'requires_chart',
   ],
 } as const;
+
+export type VoiceTaskClass =
+  | 'conversation'
+  | 'vision'
+  | 'compute'
+  | 'web'
+  | 'geo'
+  | 'structured'
+  | 'background';
+export type VoiceExecutionLane = 'immediate' | 'structured' | 'background';
+export type VoiceResponseSurface = 'voice' | 'camera' | 'canvas' | 'document';
+
+export interface VoiceRouteDecision {
+  taskClass: VoiceTaskClass;
+  executionLane: VoiceExecutionLane;
+  responseSurface: VoiceResponseSurface;
+  requiresChart: boolean;
+}
+
+const DEFAULT_ROUTE_DECISION: VoiceRouteDecision = {
+  taskClass: 'conversation',
+  executionLane: 'immediate',
+  responseSurface: 'voice',
+  requiresChart: false,
+};
 
 export interface VoiceToolRouteResult {
   selection: VoiceToolSelection;
   rawSelection: VoiceToolSelection;
+  decision: VoiceRouteDecision;
   reasoning: string | null;
   routeMs: number;
 }
@@ -55,11 +98,23 @@ function parseBooleanField(record: Record<string, unknown>, key: keyof VoiceTool
   return record[key] === true;
 }
 
-function parseRouterResponse(raw: string): { selection: VoiceToolSelection; reasoning: string | null } {
+function parseEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === 'string' && allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function parseRouterResponse(raw: string): {
+  selection: VoiceToolSelection;
+  decision: VoiceRouteDecision;
+  reasoning: string | null;
+} {
   const parsed = JSON.parse(raw) as unknown;
   const record = asRecord(parsed);
   if (!record) {
-    return { selection: EMPTY_TOOL_SELECTION, reasoning: null };
+    return { selection: EMPTY_TOOL_SELECTION, decision: DEFAULT_ROUTE_DECISION, reasoning: null };
   }
 
   const reasoning =
@@ -75,6 +130,24 @@ function parseRouterResponse(raw: string): { selection: VoiceToolSelection; reas
       code_execution: parseBooleanField(record, 'code_execution'),
       custom_tools: parseBooleanField(record, 'custom_tools'),
     }),
+    decision: {
+      taskClass: parseEnum(
+        record.task_class,
+        ['conversation', 'vision', 'compute', 'web', 'geo', 'structured', 'background'] as const,
+        'conversation',
+      ),
+      executionLane: parseEnum(
+        record.execution_lane,
+        ['immediate', 'structured', 'background'] as const,
+        'immediate',
+      ),
+      responseSurface: parseEnum(
+        record.response_surface,
+        ['voice', 'camera', 'canvas', 'document'] as const,
+        'voice',
+      ),
+      requiresChart: record.requires_chart === true,
+    },
     reasoning,
   };
 }
@@ -112,35 +185,6 @@ function shouldDebugTools(): boolean {
   );
 }
 
-function isLikelyCameraPhysicalTask(transcript: string): boolean {
-  return /\b(clean|cook|make|build|fix|repair|connect|assemble|use|move|place|cut|wash|mix|ingredient|dish|dishes|part|tool|product|bottle|skin|pool|shot|aim|broken|damage|material)\b/i.test(
-    transcript,
-  );
-}
-
-function explicitlyNeedsExternalInfo(transcript: string): boolean {
-  return /\b(search|google|web|online|latest|current|today|price|nearby|near me|open now|buy|where can i|official|manual|recipe from|authentic recipe|news)\b/i.test(
-    transcript,
-  );
-}
-
-function suppressExternalToolsForCameraTask(
-  selection: VoiceToolSelection,
-  transcript: string,
-  hasImages: boolean,
-): VoiceToolSelection {
-  if (!hasImages || !isLikelyCameraPhysicalTask(transcript) || explicitlyNeedsExternalInfo(transcript)) {
-    return selection;
-  }
-
-  return {
-    ...selection,
-    google_search: false,
-    google_maps: false,
-    url_context: false,
-  };
-}
-
 export async function routeVoiceTools(
   client: GoogleGenAI,
   transcript: string,
@@ -152,6 +196,7 @@ export async function routeVoiceTools(
     return {
       selection: EMPTY_TOOL_SELECTION,
       rawSelection: EMPTY_TOOL_SELECTION,
+      decision: DEFAULT_ROUTE_DECISION,
       reasoning: null,
       routeMs: 0,
     };
@@ -161,6 +206,7 @@ export async function routeVoiceTools(
     return {
       selection: EMPTY_TOOL_SELECTION,
       rawSelection: EMPTY_TOOL_SELECTION,
+      decision: DEFAULT_ROUTE_DECISION,
       reasoning: null,
       routeMs: performance.now() - routeStartedAt,
     };
@@ -189,22 +235,39 @@ export async function routeVoiceTools(
       return {
         selection: EMPTY_TOOL_SELECTION,
         rawSelection: EMPTY_TOOL_SELECTION,
+        decision: DEFAULT_ROUTE_DECISION,
         reasoning: null,
         routeMs: performance.now() - routeStartedAt,
       };
     }
 
-    const { selection: rawSelection, reasoning } = parseRouterResponse(raw);
-    const selection = suppressExternalToolsForCameraTask(resolveToolSelection(rawSelection, {
+    const { selection: rawSelection, decision, reasoning } = parseRouterResponse(raw);
+    let selection = resolveToolSelection(rawSelection, {
       transcript,
       hasImages: context.hasImages,
-    }), transcript, context.hasImages);
+    });
+    if (decision.requiresChart) {
+      selection = clampSelectionToEnv({
+        ...selection,
+        code_execution: true,
+        custom_tools: false,
+      });
+    } else if (decision.executionLane === 'background') {
+      selection = clampSelectionToEnv({
+        google_search: false,
+        google_maps: false,
+        url_context: false,
+        code_execution: false,
+        custom_tools: true,
+      });
+    }
 
     if (shouldDebugTools()) {
       console.debug('[tool-router]', {
         transcript,
         rawSelection,
         resolvedSelection: selection,
+        decision,
         reasoning,
         model: routedModel,
       });
@@ -213,6 +276,7 @@ export async function routeVoiceTools(
     return {
       selection,
       rawSelection,
+      decision,
       reasoning,
       routeMs: performance.now() - routeStartedAt,
     };
@@ -220,6 +284,7 @@ export async function routeVoiceTools(
     return {
       selection: EMPTY_TOOL_SELECTION,
       rawSelection: EMPTY_TOOL_SELECTION,
+      decision: DEFAULT_ROUTE_DECISION,
       reasoning: null,
       routeMs: performance.now() - routeStartedAt,
     };

@@ -12,6 +12,7 @@ import { ChrystyCursorOverlay } from '@/components/astra/chrysty-cursor-overlay'
 import { ConnectedUserBadge } from '@/components/auth/connected-user-badge';
 import { DocumentsSheet } from '@/components/astra/documents-sheet';
 import { ListeningAmbientBackground } from '@/components/astra/listening-ambient-background';
+import { LiveTaskPill } from '@/components/astra/live-task-pill';
 import { PhotoAnnotationEditor } from '@/components/astra/photo-annotation-editor';
 import { PhotoStrip, type PhotoStripItem } from '@/components/astra/photo-strip';
 import { StatusLabel } from '@/components/astra/status-label';
@@ -43,6 +44,7 @@ import { burnFocusAnnotations } from '@/lib/camera/annotate';
 import { CameraError, type CameraAspectRatio, type FocusAnnotation } from '@/lib/camera/types';
 import { hasSavableExplanationContent } from '@/lib/documents/save-explanation-artifacts';
 import { isPerceptionEnabled, PerceptionManager } from '@/lib/perception/manager';
+import type { BackgroundJobClientItem } from '@/lib/background-jobs/types';
 
 const showTranscript = process.env.NEXT_PUBLIC_SHOW_TRANSCRIPT === 'true';
 const geminiLiveEnabled = isGeminiLiveEnabled();
@@ -93,6 +95,9 @@ export function AstraVoiceShell() {
   const photoUrlsRef = useRef<Map<string, { url: string; source: Blob }>>(new Map());
   const perceptionManagerRef = useRef<PerceptionManager | null>(null);
   const suspendSessionRef = useRef<() => void>(() => {});
+  const notifyLiveCompletionRef = useRef<(title: string, summary?: string | null) => boolean>(
+    () => false,
+  );
 
   const isInsecureContext = !useSyncExternalStore(
     () => () => {},
@@ -129,6 +134,7 @@ export function AstraVoiceShell() {
     setAspectRatio,
     focusAtPoint,
     takePhoto,
+    captureCurrentFrame,
     updatePendingPhoto,
     removePendingPhoto,
     clearPendingPhotos,
@@ -221,6 +227,7 @@ export function AstraVoiceShell() {
     if (pending.length > 0) {
       clearLiveFocusAnnotations();
       return pending.map((photo) => ({
+        imageId: photo.id,
         blob: photo.annotatedBlob ?? photo.blob,
         mimeType: photo.mimeType,
         captureMode: photo.mode,
@@ -273,6 +280,31 @@ export function AstraVoiceShell() {
     stopFrameSamplingAndPickBest,
   ]);
 
+  const getLiveCameraFrame = useCallback(async (): Promise<VisualCapture | null> => {
+    if (!cameraActive) return null;
+
+    const focusAnnotations = getImageSpaceLiveFocusAnnotations();
+    const frame = await captureCurrentFrame(cameraVideoRef.current, focusAnnotations);
+    if (!frame) return null;
+
+    const perception = getPerceptionSnapshot();
+    return {
+      imageId: frame.id,
+      blob: frame.annotatedBlob ?? frame.blob,
+      mimeType: frame.mimeType,
+      captureMode: frame.mode,
+      width: frame.width,
+      height: frame.height,
+      focusAnnotations: frame.focusAnnotations,
+      ...(perception ? { perception } : {}),
+    };
+  }, [
+    cameraActive,
+    captureCurrentFrame,
+    getImageSpaceLiveFocusAnnotations,
+    getPerceptionSnapshot,
+  ]);
+
   const {
     active: liveGuideActive,
     noteSentFrame: noteLiveGuideFrame,
@@ -292,6 +324,18 @@ export function AstraVoiceShell() {
     }
     return visuals;
   }, [getVisualCapture, liveGuideActive, noteLiveGuideFrame]);
+
+  const getLiveCameraFrameWithLiveGuide = useCallback(async (): Promise<VisualCapture | null> => {
+    const visual = await getLiveCameraFrame();
+    if (liveGuideActive && visual) {
+      const frameDims = { width: visual.width, height: visual.height };
+      noteLiveGuideFrame({ blob: visual.blob, ...frameDims });
+      if (frameDims.width > 0 && frameDims.height > 0) {
+        setLiveGuideFrameDims(frameDims);
+      }
+    }
+    return visual;
+  }, [getLiveCameraFrame, liveGuideActive, noteLiveGuideFrame]);
 
   useEffect(() => {
     if (!liveGuideActive) {
@@ -316,8 +360,9 @@ export function AstraVoiceShell() {
     getDocument,
   } = useGeneratedDocuments();
 
-  const handleJobCompleted = useCallback(() => {
+  const handleJobCompleted = useCallback((job: BackgroundJobClientItem) => {
     void refreshDocuments();
+    notifyLiveCompletionRef.current(job.title, job.resultSummary);
   }, [refreshDocuments]);
 
   const {
@@ -398,12 +443,15 @@ export function AstraVoiceShell() {
     isSpeaking: liveIsSpeaking,
     explanation: liveExplanation,
     transcriptChunks: liveTranscriptChunks,
+    delegation: liveDelegation,
     error: liveError,
     prepareAudio: prepareLiveAudio,
     connect: connectLive,
     disconnect: disconnectLive,
     dismissExplanation: liveDismissExplanation,
     reset: resetLiveAgent,
+    sendCapture: sendLiveCapture,
+    notifyBackgroundCompletion,
     sendMonitorTurn: liveSendMonitorTurn,
     sendBootstrapTurn: liveSendBootstrapTurn,
   } = useGeminiLive({
@@ -413,10 +461,15 @@ export function AstraVoiceShell() {
     onSpeakingStart: handleSpeakingStart,
     onSpeakingEnd: handleSpeakingEnd,
     getVisualCapture: getVisualCaptureWithLiveGuide,
+    getLiveCameraFrame: getLiveCameraFrameWithLiveGuide,
     getRequestMode: liveGuide.getRequestMode,
     onLiveGuide: liveGuide.handleLiveGuideUpdate,
     onLiveGuideSpeech: liveGuide.noteSpokenText,
   });
+
+  useEffect(() => {
+    notifyLiveCompletionRef.current = notifyBackgroundCompletion;
+  }, [notifyBackgroundCompletion]);
 
   const isSpeaking = geminiLiveEnabled ? liveIsSpeaking : httpIsSpeaking;
   const explanation = geminiLiveEnabled ? liveExplanation : httpExplanation;
@@ -694,7 +747,18 @@ export function AstraVoiceShell() {
 
     try {
       const focusAnnotations = getImageSpaceLiveFocusAnnotations();
-      await takePhoto(focusAnnotations);
+      const photo = await takePhoto(cameraVideoRef.current, focusAnnotations);
+      if (geminiLiveEnabled && livePhase === 'live') {
+        await sendLiveCapture({
+          imageId: photo.id,
+          blob: photo.annotatedBlob ?? photo.blob,
+          mimeType: photo.mimeType,
+          captureMode: photo.mode,
+          width: photo.width,
+          height: photo.height,
+          focusAnnotations: photo.focusAnnotations,
+        });
+      }
       clearLiveFocusAnnotations();
     } catch (error) {
       const cameraError =
@@ -709,6 +773,8 @@ export function AstraVoiceShell() {
     clearLiveFocusAnnotations,
     getImageSpaceLiveFocusAnnotations,
     isBusy,
+    livePhase,
+    sendLiveCapture,
     takePhoto,
   ]);
 
@@ -1113,6 +1179,7 @@ export function AstraVoiceShell() {
       </section>
 
       <footer className="relative z-20 flex w-full flex-col items-center gap-4">
+        <LiveTaskPill delegation={geminiLiveEnabled ? liveDelegation : null} />
         <BackgroundJobsPill
           activeJobs={activeBackgroundJobs}
           unseenCompletedCount={unseenCompletedJobs.length}

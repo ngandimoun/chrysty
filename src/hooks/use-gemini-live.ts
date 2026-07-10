@@ -15,6 +15,7 @@ import { getLiveWebSocketUrl, isLiveJourneyDebugEnabled } from '@/lib/gemini/con
 import { buildUserContext } from '@/lib/gemini/user-context';
 import type {
   LiveClientEvent,
+  LiveDelegationStage,
   LiveSessionPhase,
 } from '@/lib/live/types';
 import {
@@ -46,6 +47,7 @@ interface UseGeminiLiveOptions {
   onSpeakingStart?: () => void;
   onSpeakingEnd?: () => void;
   getVisualCapture?: () => Promise<VisualCapture[]>;
+  getLiveCameraFrame?: () => Promise<VisualCapture | null>;
   getRequestMode?: () => VoiceRequestMode;
   onLiveGuide?: (update: LiveGuideUpdate) => void;
   onLiveGuideSpeech?: (text: string) => void;
@@ -62,12 +64,19 @@ export interface UseGeminiLiveResult {
   isSpeaking: boolean;
   explanation: ExplanationState;
   transcriptChunks: TranscriptChunk[];
+  delegation: {
+    turnId: string;
+    stage: LiveDelegationStage;
+    errorCode?: string;
+  } | null;
   error: string | null;
   prepareAudio: () => Promise<void>;
   connect: () => Promise<ConnectResult>;
   disconnect: () => void;
   dismissExplanation: () => void;
   reset: () => void;
+  sendCapture: (capture: VisualCapture) => Promise<boolean>;
+  notifyBackgroundCompletion: (title: string, summary?: string | null) => boolean;
   sendMonitorTurn: (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>;
   sendBootstrapTurn: (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>;
 }
@@ -127,6 +136,7 @@ export function useGeminiLive({
   onSpeakingStart,
   onSpeakingEnd,
   getVisualCapture,
+  getLiveCameraFrame,
   getRequestMode,
   onLiveGuide,
   onLiveGuideSpeech,
@@ -135,6 +145,7 @@ export function useGeminiLive({
   const [isModelSpeaking, setIsModelSpeaking] = useState(false);
   const [explanation, setExplanation] = useState<ExplanationState>(EMPTY_EXPLANATION);
   const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
+  const [delegation, setDelegation] = useState<UseGeminiLiveResult['delegation']>(null);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -163,6 +174,7 @@ export function useGeminiLive({
 
   const getStreamRef = useRef(getStream);
   const getVisualCaptureRef = useRef(getVisualCapture);
+  const getLiveCameraFrameRef = useRef(getLiveCameraFrame);
   const getRequestModeRef = useRef(getRequestMode);
   const onLiveGuideRef = useRef(onLiveGuide);
   const onLiveGuideSpeechRef = useRef(onLiveGuideSpeech);
@@ -175,6 +187,9 @@ export function useGeminiLive({
   useEffect(() => {
     getVisualCaptureRef.current = getVisualCapture;
   }, [getVisualCapture]);
+  useEffect(() => {
+    getLiveCameraFrameRef.current = getLiveCameraFrame;
+  }, [getLiveCameraFrame]);
   useEffect(() => {
     getRequestModeRef.current = getRequestMode;
   }, [getRequestMode]);
@@ -280,22 +295,41 @@ export function useGeminiLive({
   const openDelegationStream = useCallback(
     async (turnId: string) => {
       if (activeDelegationTurnRef.current === turnId) return;
-      activeDelegationTurnRef.current = turnId;
       stopDelegationStream();
+      activeDelegationTurnRef.current = turnId;
+      setDelegation({ turnId, stage: 'queued' });
 
       const abort = new AbortController();
       delegationAbortRef.current = abort;
 
       debugLiveJourney('delegation_sse_open', { turn_id: turnId });
 
-      const response = await fetch(`/api/live/delegate/stream?turn_id=${encodeURIComponent(turnId)}`, {
-        method: 'GET',
+      const visuals = (await getVisualCaptureRef.current?.()) ?? [];
+      const form = new FormData();
+      form.set('turn_id', turnId);
+      form.set(
+        'imagesMeta',
+        JSON.stringify(
+          visuals.map((visual) => ({
+            imageId: visual.imageId,
+            width: visual.width,
+            height: visual.height,
+          })),
+        ),
+      );
+      visuals.forEach((visual, index) => {
+        const extension = visual.mimeType === 'image/png' ? 'png' : visual.mimeType === 'image/webp' ? 'webp' : 'jpg';
+        form.append('images', visual.blob, `${visual.imageId || `capture-${index + 1}`}.${extension}`);
+      });
+
+      const response = await fetch('/api/live/delegate/stream', {
+        method: 'POST',
         credentials: 'include',
         headers: uploadAstraKeyHeaders(),
+        body: form,
         signal: abort.signal,
       });
 
-      const visuals = (await getVisualCaptureRef.current?.()) ?? [];
       const userImages: GuidanceImage[] = visuals.map((visual, index) => {
         const url = URL.createObjectURL(visual.blob);
         explanationImageUrlsRef.current.push(url);
@@ -309,7 +343,7 @@ export function useGeminiLive({
         };
       });
 
-      await consumeResponseStream(response, {
+      const streamResult = await consumeResponseStream(response, {
         onAudio: () => {},
         onExplanationStart: (visualsPayload) => {
           setExplanation({
@@ -354,13 +388,39 @@ export function useGeminiLive({
         onLiveGuide: (update) => {
           onLiveGuideRef.current?.(update);
         },
+        onProgress: (stage) => {
+          setDelegation({ turnId, stage });
+        },
       });
+
+      if (streamResult.error) {
+        setDelegation({ turnId, stage: 'failed' });
+        setError(streamResult.error);
+      } else {
+        setDelegation({ turnId, stage: 'completed' });
+      }
 
       if (activeDelegationTurnRef.current === turnId) {
         activeDelegationTurnRef.current = null;
       }
     },
     [stopDelegationStream],
+  );
+
+  const beginDelegationStream = useCallback(
+    (turnId: string) => {
+      void openDelegationStream(turnId).catch((streamError) => {
+        if (streamError instanceof DOMException && streamError.name === 'AbortError') return;
+        activeDelegationTurnRef.current = null;
+        const message =
+          streamError instanceof Error
+            ? streamError.message
+            : 'Chrysty could not finish that task. Please try again.';
+        setDelegation({ turnId, stage: 'failed' });
+        setError(message);
+      });
+    },
+    [openDelegationStream],
   );
 
   const sendImageOverSocket = useCallback(async (visual: VisualCapture) => {
@@ -386,12 +446,35 @@ export function useGeminiLive({
     const interval = isModelSpeakingRef.current ? FRAME_SPEAKING_INTERVAL_MS : FRAME_IDLE_INTERVAL_MS;
     if (performance.now() - lastFrameSentAtRef.current < interval) return;
 
-    const visuals = await getVisualCaptureRef.current?.();
-    const first = visuals?.[0];
+    const first = await getLiveCameraFrameRef.current?.();
     if (!first) return;
 
     await sendImageOverSocket(first);
   }, [sendImageOverSocket]);
+
+  const sendCapture = useCallback(
+    async (capture: VisualCapture): Promise<boolean> => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      await sendImageOverSocket(capture);
+      return true;
+    },
+    [sendImageOverSocket],
+  );
+
+  const notifyBackgroundCompletion = useCallback((title: string, summary?: string | null): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(
+      JSON.stringify({
+        type: 'text',
+        text: `[Chrysty workspace event] The task "${title}" just finished.${
+          summary ? ` Result: ${summary}` : ''
+        } Tell the user naturally in one brief sentence that it is ready in Documents. Do not mention models, agents, crews, or internal systems.`,
+      }),
+    );
+    return true;
+  }, []);
 
   const startFrameTimer = useCallback(() => {
     stopFrameTimer();
@@ -486,7 +569,14 @@ export function useGeminiLive({
           break;
         case 'delegation_started':
           debugLiveJourney('delegation_started', { turn_id: event.turn_id });
-          void openDelegationStream(event.turn_id);
+          beginDelegationStream(event.turn_id);
+          break;
+        case 'delegation_status':
+          setDelegation({
+            turnId: event.turn_id,
+            stage: event.stage,
+            ...(event.error_code ? { errorCode: event.error_code } : {}),
+          });
           break;
         case 'simple_explanation':
           onLiveGuideSpeechRef.current?.(event.text);
@@ -521,7 +611,7 @@ export function useGeminiLive({
           break;
       }
     },
-    [closeWebSocket, enqueueLiveAudio, getPlayer, openDelegationStream, updateTranscription],
+    [beginDelegationStream, closeWebSocket, enqueueLiveAudio, getPlayer, updateTranscription],
   );
 
   const finishConnectedHandshake = useCallback(
@@ -544,11 +634,11 @@ export function useGeminiLive({
       setPhase('live');
 
       if (event.pending_turn_id) {
-        void openDelegationStream(event.pending_turn_id);
+        beginDelegationStream(event.pending_turn_id);
       }
       startFrameTimer();
     },
-    [drainPendingAudio, openDelegationStream, startFrameTimer, startMicCapture],
+    [beginDelegationStream, drainPendingAudio, startFrameTimer, startMicCapture],
   );
 
   const openWebSocket = useCallback(async (): Promise<ConnectResult> => {
@@ -761,6 +851,7 @@ export function useGeminiLive({
     getPlayer().clear();
     setIsModelSpeaking(false);
     setTranscriptChunks([]);
+    setDelegation(null);
     setPhase('idle');
   }, [closeWebSocket, getPlayer, stopDelegationStream, stopFrameTimer, stopPcmCapture]);
 
@@ -820,12 +911,15 @@ export function useGeminiLive({
     isSpeaking: isModelSpeaking,
     explanation,
     transcriptChunks,
+    delegation,
     error,
     prepareAudio,
     connect,
     disconnect,
     dismissExplanation,
     reset,
+    sendCapture,
+    notifyBackgroundCompletion,
     sendMonitorTurn: sendVisualOverSocket,
     sendBootstrapTurn: sendVisualOverSocket,
   };

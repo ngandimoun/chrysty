@@ -336,7 +336,7 @@ function buildToolDefinitions(): CustomToolDefinition[] {
                   visualContext: {
                     type: 'string',
                     description:
-                      'REQUIRED whenever the user captured photos relevant to the task. The background crew cannot see images, so describe everything task-relevant in detail: visible text, brand/product names, prices, quantities, locations, layout, condition, colors, and anything the user pointed at or annotated.',
+                      'REQUIRED whenever captures matter. Provide a faithful multimodal observation artifact with image ids, OCR text, observed entities/details, visible measurements, relationships, user annotations, and uncertainty. Never invent details that are not visible.',
                   },
                 },
                 required: ['objective', 'title'],

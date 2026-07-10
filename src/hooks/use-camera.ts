@@ -68,7 +68,14 @@ interface UseCameraResult {
   setExposureCompensation: (value: number) => Promise<void>;
   setAspectRatio: (ratio: CameraAspectRatio) => Promise<void>;
   focusAtPoint: (x: number, y: number) => Promise<void>;
-  takePhoto: (focusAnnotations?: FocusAnnotation[]) => Promise<void>;
+  takePhoto: (
+    video: HTMLVideoElement | null,
+    focusAnnotations?: FocusAnnotation[],
+  ) => Promise<PendingPhoto>;
+  captureCurrentFrame: (
+    video: HTMLVideoElement | null,
+    focusAnnotations?: FocusAnnotation[],
+  ) => Promise<PendingPhoto | null>;
   updatePendingPhoto: (id: string, patch: Partial<PendingPhoto>) => void;
   removePendingPhoto: (id: string) => void;
   clearPendingPhotos: () => void;
@@ -415,48 +422,66 @@ export function useCamera(): UseCameraResult {
     }
   }, []);
 
-  const takePhoto = useCallback(async (focusAnnotations: FocusAnnotation[] = []) => {
-    if (pendingPhotosRef.current.length >= MAX_PENDING_PHOTOS) {
-      throw new CameraError('limit-reached', `You can capture up to ${MAX_PENDING_PHOTOS} photos. Remove one to add another.`);
-    }
-
-    const video = document.querySelector<HTMLVideoElement>('[data-camera-preview]');
-    if (!video || !streamRef.current) {
-      throw new CameraError('unknown', 'Camera preview is not ready.');
-    }
-
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
+  const preparePhoto = useCallback(async (
+    video: HTMLVideoElement | null,
+    focusAnnotations: FocusAnnotation[],
+    mode: PendingPhoto['mode'],
+  ): Promise<PendingPhoto | null> => {
+    if (!video || !streamRef.current || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return null;
     }
 
     const frameScore = scoreVideoFrame(video);
     if (!frameScore) {
-      throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
+      return null;
     }
 
     const prepared = await prepareVideoFrameForModel(video, {
       digitalScale: digitalScaleRef.current,
     });
     if (!prepared) {
-      throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
+      return null;
     }
 
     const annotated =
       focusAnnotations.length > 0 ? await burnFocusAnnotations(prepared.blob, focusAnnotations) : null;
 
-    const photo: PendingPhoto = {
+    return {
       id: createUuid(),
       blob: prepared.blob,
       ...(annotated ? { annotatedBlob: annotated.blob } : {}),
       mimeType: prepared.mimeType,
       width: prepared.width,
       height: prepared.height,
-      mode: 'photo',
+      mode,
       focusAnnotations,
     };
+  }, []);
+
+  const takePhoto = useCallback(async (
+    video: HTMLVideoElement | null,
+    focusAnnotations: FocusAnnotation[] = [],
+  ): Promise<PendingPhoto> => {
+    if (pendingPhotosRef.current.length >= MAX_PENDING_PHOTOS) {
+      throw new CameraError('limit-reached', `You can capture up to ${MAX_PENDING_PHOTOS} photos. Remove one to add another.`);
+    }
+
+    const photo = await preparePhoto(video, focusAnnotations, 'photo');
+    if (!photo) {
+      throw new CameraError('unknown', 'Could not capture photo. Try holding the camera steady.');
+    }
 
     setPendingPhotos((current) => [...current, photo]);
-  }, []);
+    return photo;
+  }, [preparePhoto]);
+
+  const captureCurrentFrame = useCallback(
+    (
+      video: HTMLVideoElement | null,
+      focusAnnotations: FocusAnnotation[] = [],
+    ) => preparePhoto(video, focusAnnotations, 'smart_snapshot'),
+    [preparePhoto],
+  );
 
   const removePendingPhoto = useCallback((id: string) => {
     setPendingPhotos((current) => current.filter((photo) => photo.id !== id));
@@ -525,6 +550,7 @@ export function useCamera(): UseCameraResult {
     setAspectRatio,
     focusAtPoint: focusAtPointHandler,
     takePhoto,
+    captureCurrentFrame,
     updatePendingPhoto,
     removePendingPhoto,
     clearPendingPhotos,

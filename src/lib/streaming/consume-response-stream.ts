@@ -12,6 +12,7 @@ import type {
 } from '@/lib/gemini/voice-response-schema';
 import type { ExplanationVisuals, LiveGuideUpdate, PlaceCard, WebCitation } from '@/lib/streaming/types';
 import { parseStockImageGroups } from '@/lib/visuals/stock-images';
+import type { LiveDelegationStage } from '@/lib/live/types';
 
 export interface ResponseStreamDone {
   timings: ResponseTimings;
@@ -25,6 +26,7 @@ export interface ResponseStreamCallbacks {
   onExplanationDone?: (text: string, visuals: ExplanationVisuals) => void;
   onLiveGuide?: (update: LiveGuideUpdate) => void;
   onTtsError?: (message: string) => void;
+  onProgress?: (stage: LiveDelegationStage, payload: Record<string, unknown>) => void;
 }
 
 function parsePlaces(value: unknown): PlaceCard[] {
@@ -316,7 +318,15 @@ export async function consumeResponseStream(
   response: Response,
   callbacks: ResponseStreamCallbacks,
 ): Promise<{ done: ResponseStreamDone | null; error: string | null }> {
-  const { onAudio, onExplanationStart, onExplanationDelta, onExplanationDone, onLiveGuide, onTtsError } =
+  const {
+    onAudio,
+    onExplanationStart,
+    onExplanationDelta,
+    onExplanationDone,
+    onLiveGuide,
+    onTtsError,
+    onProgress,
+  } =
     callbacks;
 
   if (!response.ok) {
@@ -353,7 +363,23 @@ export async function consumeResponseStream(
         try {
           const payload = JSON.parse(parsed.data) as Record<string, unknown>;
 
-          if (parsed.event === 'explanation_start') {
+          if (parsed.event === 'delegation_progress' && typeof payload.stage === 'string') {
+            onProgress?.(payload.stage as LiveDelegationStage, payload);
+          } else if (
+            ['search_start', 'maps_start', 'url_start', 'custom_tool_start', 'code_start'].includes(
+              parsed.event,
+            )
+          ) {
+            const stageByEvent: Partial<Record<string, LiveDelegationStage>> = {
+              search_start: 'using_search',
+              maps_start: 'using_maps',
+              url_start: 'reading_source',
+              custom_tool_start: 'using_custom_tool',
+              code_start: 'running_code',
+            };
+            const stage = stageByEvent[parsed.event];
+            if (stage) onProgress?.(stage, payload);
+          } else if (parsed.event === 'explanation_start') {
             onExplanationStart?.(parseVisuals(payload));
           } else if (parsed.event === 'explanation_delta' && typeof payload.text === 'string') {
             onExplanationDelta?.(payload.text);
@@ -374,7 +400,18 @@ export async function consumeResponseStream(
           } else if (parsed.event === 'tts_error') {
             onTtsError?.(typeof payload.message === 'string' ? payload.message : 'Voice playback failed.');
           } else if (parsed.event === 'done') {
-            const timings = payload.timings as ResponseTimings | undefined;
+            const timings =
+              (payload.timings as ResponseTimings | undefined) ??
+              (payload.cached === true
+                ? {
+                    sttMs: 0,
+                    llmMs: 0,
+                    ttsMs: 0,
+                    ttsFirstAudioMs: null,
+                    totalMs: 0,
+                    audioDurationMs: 0,
+                  }
+                : undefined);
             if (!timings) {
               return { done: null, error: 'Response completed without timings.' };
             }

@@ -1,6 +1,4 @@
 import { GoogleGenAI } from '@google/genai';
-import { NextResponse } from 'next/server';
-
 import { requireAstraIdentity, respondAstraIdentityError } from '@/lib/astra/guard';
 import { fetchUserEcosystemActivity } from '@/lib/astra/ecosystem-activity';
 import { ensureAstraWorkspace } from '@/lib/astra/workspace';
@@ -13,18 +11,106 @@ import {
   PlatformAccessError,
   requirePlatformAccessFromRequest,
 } from '@/lib/chrysty/guard';
-import { getLiveDelegation, patchLiveSession, updateLiveDelegation } from '@/lib/live/db';
+import {
+  getLiveDelegation,
+  patchLiveSession,
+  updateLiveDelegation,
+  updateLiveDelegationRequest,
+} from '@/lib/live/db';
 import { streamLiveDelegationToEncoder } from '@/lib/live/delegate-pipeline';
 import { encodeSseEvent } from '@/lib/live/sse';
 import { insertConversationTurn } from '@/lib/astra/db/conversation-history';
 import { persistTurnToMem0 } from '@/lib/mem0/persist';
 import { getMem0MemoryUserId } from '@/lib/mem0/identity';
 import { isSupabaseConfigured } from '@/lib/supabase/admin';
+import type {
+  LiveDelegateRequest,
+  LiveDelegationResult,
+  LiveDelegationStage,
+} from '@/lib/live/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-export async function GET(request: Request) {
+const MAX_CAPTURE_COUNT = 7;
+const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_CAPTURE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+function encodeResultReplay(turnId: string, result: LiveDelegationResult): string {
+  let output = '';
+  if (result.live_guide || result.guidance_mode !== 'static') {
+    output += encodeSseEvent('live_guide', {
+      turn_id: turnId,
+      liveGuide: result.live_guide ?? null,
+      guidanceMode: result.guidance_mode ?? 'static',
+      monitor: false,
+      cached: true,
+    });
+  }
+  if (result.show_explanation) {
+    output += encodeSseEvent('explanation_start', {
+      turn_id: turnId,
+      ...result.visuals,
+      cached: true,
+    });
+    output += encodeSseEvent('explanation_done', {
+      turn_id: turnId,
+      text: result.explanation_text,
+      ...result.visuals,
+      cached: true,
+    });
+  }
+  output += encodeSseEvent('done', {
+    turn_id: turnId,
+    spoken_transcript: result.spoken_summary,
+    timings: result.timings,
+    cached: true,
+  });
+  return output;
+}
+
+async function readStreamInput(request: Request): Promise<{
+  turnId: string | null;
+  images: NonNullable<LiveDelegateRequest['images']>;
+}> {
+  if (request.method !== 'POST') {
+    return {
+      turnId: new URL(request.url).searchParams.get('turn_id')?.trim() ?? null,
+      images: [],
+    };
+  }
+
+  const form = await request.formData();
+  const turnId = String(form.get('turn_id') ?? '').trim() || null;
+  const metadata = JSON.parse(String(form.get('imagesMeta') ?? '[]')) as Array<{
+    imageId?: string;
+    width?: number;
+    height?: number;
+  }>;
+  const files = form.getAll('images').filter((entry): entry is File => entry instanceof File);
+  if (files.length > MAX_CAPTURE_COUNT) {
+    throw new Error(`A maximum of ${MAX_CAPTURE_COUNT} captures can be attached.`);
+  }
+
+  const images = await Promise.all(
+    files.map(async (file, index) => {
+      if (!ALLOWED_CAPTURE_TYPES.has(file.type) || file.size > MAX_CAPTURE_BYTES) {
+        throw new Error('One of the attached captures is unsupported or too large.');
+      }
+      const meta = metadata[index];
+      return {
+        image_id: meta?.imageId,
+        mime_type: file.type,
+        data_base64: Buffer.from(await file.arrayBuffer()).toString('base64'),
+        width: meta?.width,
+        height: meta?.height,
+      };
+    }),
+  );
+  return { turnId, images };
+}
+
+async function handleStream(request: Request) {
   if (!isSupabaseConfigured()) {
     return new Response(encodeSseEvent('error', { message: 'Supabase is not configured.' }), {
       status: 503,
@@ -44,8 +130,17 @@ export async function GET(request: Request) {
     throw error;
   }
 
-  const url = new URL(request.url);
-  const turnId = url.searchParams.get('turn_id')?.trim();
+  let input;
+  try {
+    input = await readStreamInput(request);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid capture upload.';
+    return new Response(encodeSseEvent('error', { message }), {
+      status: 400,
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+    });
+  }
+  const turnId = input.turnId;
   if (!turnId) {
     return new Response(encodeSseEvent('error', { message: 'turn_id is required.' }), {
       status: 400,
@@ -77,10 +172,23 @@ export async function GET(request: Request) {
   }
 
   if (delegation.status === 'completed') {
+    if (delegation.result) {
+      return new Response(encodeResultReplay(turnId, delegation.result), {
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+      });
+    }
     return new Response(
       encodeSseEvent('done', {
         turn_id: turnId,
         spoken_transcript: delegation.spoken_summary ?? '',
+        timings: {
+          sttMs: 0,
+          llmMs: 0,
+          ttsMs: 0,
+          ttsFirstAudioMs: null,
+          totalMs: 0,
+          audioDurationMs: 0,
+        },
         cached: true,
       }),
       { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } },
@@ -96,6 +204,13 @@ export async function GET(request: Request) {
 
   const workspace = await ensureAstraWorkspace(identity.astraKey, identity.userId);
   const memoryUserId = getMem0MemoryUserId(identity);
+  const requestWithCaptures: LiveDelegateRequest =
+    input.images.length > 0
+      ? { ...delegation.request, images: input.images }
+      : delegation.request;
+  if (input.images.length > 0) {
+    await updateLiveDelegationRequest(turnId, requestWithCaptures);
+  }
 
   let delegationPrompt: DelegationPromptContext | undefined;
   if (isBackgroundJobsEnabled()) {
@@ -111,7 +226,7 @@ export async function GET(request: Request) {
     };
   }
 
-  const images: MultimodalImageInput[] = (delegation.request.images ?? []).map((image, index) => ({
+  const images: MultimodalImageInput[] = (requestWithCaptures.images ?? []).map((image, index) => ({
     imageId: image.image_id ?? `capture-${index + 1}`,
     bytes: Buffer.from(image.data_base64, 'base64'),
     mimeType: image.mime_type,
@@ -124,22 +239,26 @@ export async function GET(request: Request) {
       const encoder = new TextEncoder();
       const enqueue = (chunk: Uint8Array) => controller.enqueue(chunk);
 
+      let currentStage: LiveDelegationStage = 'analyzing';
       try {
-        await updateLiveDelegation(turnId, { status: 'running' });
+        await updateLiveDelegation(turnId, { status: 'running', stage: currentStage });
 
         const client = new GoogleGenAI({ apiKey: getGeminiApiKey() });
         const ecosystemActivity = await fetchUserEcosystemActivity(identity.userId);
 
-        const { spoken_summary, transcript } = await streamLiveDelegationToEncoder(
+        const transcriptWithVisualContext = requestWithCaptures.visual_context
+          ? `${requestWithCaptures.transcript}\n\nLive visual context:\n${requestWithCaptures.visual_context}`
+          : requestWithCaptures.transcript;
+        const { spoken_summary, transcript, result } = await streamLiveDelegationToEncoder(
           client,
           encoder,
           enqueue,
           {
             turn_id: turnId,
-            transcript: delegation.request.transcript,
+            transcript: transcriptWithVisualContext,
             images: images.length > 0 ? images : undefined,
-            userContext: delegation.request.user_context,
-            companionProfile: delegation.request.companion_profile,
+            userContext: requestWithCaptures.user_context,
+            companionProfile: requestWithCaptures.companion_profile,
             memoryContext: {
               workspaceId: workspace.id,
               astraKey: identity.astraKey,
@@ -149,15 +268,24 @@ export async function GET(request: Request) {
             delegation: delegationPrompt,
             ecosystemActivity,
             liveGuide:
-              delegation.request.mode === 'live_guide'
+              requestWithCaptures.mode === 'live_guide'
                 ? { active: true }
                 : undefined,
+            onStage: async (stage) => {
+              currentStage = stage;
+              await updateLiveDelegation(turnId, { stage });
+            },
           },
         );
 
         await updateLiveDelegation(turnId, {
           status: 'completed',
+          stage: 'completed',
+          result,
           spoken_summary,
+          error_message: null,
+          error_code: null,
+          error_stage: null,
         });
         await patchLiveSession(delegation.session_id, { pending_turn_id: null });
 
@@ -180,9 +308,30 @@ export async function GET(request: Request) {
         console.info('[live/delegate/stream] completed', { turn_id: turnId });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Delegation stream failed.';
-        await updateLiveDelegation(turnId, { status: 'failed', error_message: message });
-        enqueue(encoder.encode(encodeSseEvent('error', { turn_id: turnId, message })));
-        console.error('[live/delegate/stream] failed', { turn_id: turnId, message });
+        const errorCode = `live-delegation-${turnId}`;
+        await updateLiveDelegation(turnId, {
+          status: 'failed',
+          stage: 'failed',
+          error_message: message,
+          error_code: errorCode,
+          error_stage: currentStage,
+        });
+        enqueue(
+          encoder.encode(
+            encodeSseEvent('error', {
+              turn_id: turnId,
+              message: 'Chrysty could not finish that task. Please try again.',
+              error_code: errorCode,
+              stage: currentStage,
+            }),
+          ),
+        );
+        console.error('[live/delegate/stream] failed', {
+          turn_id: turnId,
+          error_code: errorCode,
+          stage: currentStage,
+          message,
+        });
       } finally {
         controller.close();
       }
@@ -196,4 +345,12 @@ export async function GET(request: Request) {
       Connection: 'keep-alive',
     },
   });
+}
+
+export async function GET(request: Request) {
+  return handleStream(request);
+}
+
+export async function POST(request: Request) {
+  return handleStream(request);
 }

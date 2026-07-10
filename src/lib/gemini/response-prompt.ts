@@ -56,6 +56,7 @@ import type { UserEcosystemActivity } from '@/lib/astra/ecosystem-activity';
 import { buildMemoriesBlock, buildRecentTurnsBlock } from '@/lib/mem0/prompt-block';
 import { searchUserMemories } from '@/lib/mem0/search';
 import type { MemoryContext, RetrievedMemory } from '@/lib/mem0/types';
+import type { LiveDelegationStage } from '@/lib/live/types';
 import {
   buildReferenceDocumentsBlock,
   uploadReferencePdfForGemini,
@@ -82,6 +83,7 @@ import {
   EMPTY_TOOL_SELECTION,
   hasSelectedToolsEnabled,
   routeVoiceTools,
+  type VoiceRouteDecision,
   type VoiceToolSelection,
 } from '@/lib/gemini/voice-tool-router';
 
@@ -144,11 +146,17 @@ function buildTranscriptMultimodalCue(
     perception?: PerceptionSnapshot;
     imageIds?: string[];
     liveGuide?: LiveGuideTurnOptions;
+    routeDecision?: VoiceRouteDecision;
   },
 ): string {
   const toolsLine = `Tools enabled this turn: ${formatToolSelection(options.selection ?? EMPTY_TOOL_SELECTION)}. Do not use any other tools.`;
   const quoted = `User said:\n"""${transcript}"""`;
   const attachmentLines: string[] = [];
+  if (options.routeDecision) {
+    attachmentLines.push(
+      `Semantic route: task=${options.routeDecision.taskClass}, execution=${options.routeDecision.executionLane}, preferred surface=${options.routeDecision.responseSurface}, chart=${options.routeDecision.requiresChart}. Use this as a delivery plan, but follow the visible evidence and user's explicit request.`,
+    );
+  }
 
   if (options.cameraImages && options.cameraImages.length > 1) {
     const lines = options.cameraImages.map((image) => {
@@ -415,7 +423,7 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
 - spoken_transcript narrates only the current action: what to do, where (referencing pointer/path by step number), and one check or reason. Say "number 1" / "step 2" when sequence is set on directives (match user language). Keep it natural and short; the cursor shows the "where".
 - Return few, reliable directives. Prefer one primary pointer per turn; set directive.detail to one short bubble line. Set sequence (1, 2, 3…) on directives for multi-step actions.
 - Always update live_guide.task (name, stage, progress) so the session stays coherent across turns.
-- Set needs_visual_explanation=false in Live Guide mode unless the user explicitly asks for something to read; the camera view is the workspace.${bootstrapRules}${monitorRules}`);
+- Keep the camera as the workspace for spatial coaching. Set needs_visual_explanation=true when a readable canvas materially helps: equations, charts, comparisons, citations, dense text, or a step-by-step concept explanation. Choose from the task and evidence, not keywords.${bootstrapRules}${monitorRules}`);
   }
 
   if (userContext) {
@@ -877,6 +885,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     perception?: PerceptionSnapshot;
     imageIds?: string[];
     liveGuide?: LiveGuideTurnOptions;
+    routeDecision?: VoiceRouteDecision;
   },
   userContext?: UserContext,
   selection?: VoiceToolSelection,
@@ -905,6 +914,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     perception: cueContext.perception,
     imageIds: cueContext.imageIds,
     liveGuide: cueContext.liveGuide,
+    routeDecision: cueContext.routeDecision,
   });
 
   const inputParts: InteractionContentPart[] = [{ type: 'text', text: cue }];
@@ -1104,6 +1114,7 @@ export interface LivePipelineOptions {
   /** Pre-transcribed user text from Gemini Live input transcription. */
   transcriptOverride?: string;
   skipStt?: boolean;
+  onProgress?: (stage: LiveDelegationStage) => void | Promise<void>;
 }
 
 export async function buildVoiceResponseFromMultimodal(
@@ -1194,9 +1205,18 @@ export async function buildVoiceResponseFromMultimodal(
   const isMonitorTurn = Boolean(liveGuide?.monitor);
   const isFrameOnlyTurn = Boolean(liveGuide?.monitor || liveGuide?.bootstrap);
 
-  const [{ selection, routeMs }, memories, recentTurns] = await Promise.all([
+  const [{ selection, routeMs, decision }, memories, recentTurns] = await Promise.all([
     isFrameOnlyTurn
-      ? Promise.resolve({ selection: EMPTY_TOOL_SELECTION, routeMs: 0 })
+      ? Promise.resolve({
+          selection: EMPTY_TOOL_SELECTION,
+          routeMs: 0,
+          decision: {
+            taskClass: 'vision',
+            executionLane: 'immediate',
+            responseSurface: 'camera',
+            requiresChart: false,
+          } satisfies VoiceRouteDecision,
+        })
       : routeVoiceTools(client, transcript, routeContext),
     memoryContext && !isFrameOnlyTurn
       ? searchUserMemories(memoryContext.memoryUserId, transcript)
@@ -1208,6 +1228,21 @@ export async function buildVoiceResponseFromMultimodal(
         })
       : Promise.resolve([]),
   ]);
+
+  const selectedToolStage: LiveDelegationStage | null = selection.code_execution
+    ? 'running_code'
+    : selection.google_search
+      ? 'using_search'
+      : selection.google_maps
+        ? 'using_maps'
+        : selection.url_context
+          ? 'reading_source'
+          : selection.custom_tools
+            ? 'using_custom_tool'
+            : null;
+  if (selectedToolStage) {
+    await livePipeline?.onProgress?.(selectedToolStage);
+  }
 
   const memoryRecall: MemoryRecallContext | undefined = memoryContext
     ? { memories, recentTurns }
@@ -1246,6 +1281,7 @@ export async function buildVoiceResponseFromMultimodal(
     hasFocusAnnotation: normalizedImages.some((image) => (image.focusAnnotations?.length ?? 0) > 0),
     perception: normalizedImages.find((image) => image.perception)?.perception,
     imageIds: normalizedImages.map((image) => image.imageId),
+    routeDecision: decision,
     ...(liveGuide?.active ? { liveGuide } : {}),
   };
 

@@ -457,11 +457,15 @@ export function buildRouterSystemInstruction(): string {
     '- Only combine tools when the request clearly needs a pipeline (e.g. google_search then url_context).',
     '- For physical tasks with camera images, select no tools for pure visual identification, diagnosis from visible evidence, or step guidance based only on what is shown.',
     '- Select tools when the physical task needs current facts, manuals, product compatibility, recalls, nearby supplies/services, measurements, conversions, weather, or calculations.',
+    '- Classify the task semantically; do not route from isolated keywords.',
+    '- execution_lane=immediate for quick answers, structured for rich answers completed now, and background only for outcomes that genuinely need minutes.',
+    '- response_surface=voice for short answers, camera for spatial coaching, canvas for equations/charts/comparisons/long explanations, and document for durable background artifacts.',
+    '- Set requires_chart=true only when the requested answer should contain a real data chart; this guarantees code execution and chart hydration.',
     '',
     `Only these tool IDs may be true: ${availableIds.join(', ') || 'none'}.`,
     '',
     buildToolCatalogForRouter(),
     '',
-    'Return JSON with boolean fields for each tool plus a short reasoning string.',
+    'Return JSON with boolean tool fields, task_class, execution_lane, response_surface, requires_chart, and a short reasoning string.',
   ].join('\n');
 }
