@@ -2,7 +2,7 @@
 
 import { ArrowUpRight, Circle, Highlighter, MousePointer2, PencilLine, Square } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { FocusAnnotation, FocusAnnotationShape } from '@/lib/camera/types';
 import { isCoarsePointer } from '@/lib/device/is-ios';
@@ -68,7 +68,7 @@ function hasUsableAnnotation(
 
   const widthPx = annotation.width * bounds.width;
   const heightPx = annotation.height * bounds.height;
-  return Math.max(widthPx, heightPx) >= MIN_ANNOTATION_SIZE_PX;
+  return widthPx >= MIN_ANNOTATION_SIZE_PX && heightPx >= MIN_ANNOTATION_SIZE_PX;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -100,7 +100,10 @@ function buildAnnotationFromPoints(
     const dxPx = (currentX - anchorX) * bounds.width;
     const dyPx = (currentY - anchorY) * bounds.height;
     const radiusPx = Math.max(Math.abs(dxPx), Math.abs(dyPx)) / 2;
-    const diameterPx = Math.max(radiusPx * 2, MIN_ANNOTATION_SIZE_PX);
+    const diameterPx = Math.min(
+      Math.max(radiusPx * 2, MIN_ANNOTATION_SIZE_PX),
+      Math.min(bounds.width, bounds.height),
+    );
     const width = diameterPx / bounds.width;
     const height = diameterPx / bounds.height;
     const centerX = (anchorX + currentX) / 2;
@@ -164,13 +167,16 @@ function pointHitsAnnotation(
   return dx * dx + dy * dy <= 1;
 }
 
-function getArrowVector(annotation: DraftAnnotation) {
-  const startX = (annotation.startX ?? annotation.x) * 100;
-  const startY = (annotation.startY ?? annotation.y) * 100;
-  const endX = (annotation.endX ?? annotation.x + annotation.width) * 100;
-  const endY = (annotation.endY ?? annotation.y + annotation.height) * 100;
+function getArrowVector(
+  annotation: DraftAnnotation,
+  bounds: { width: number; height: number },
+) {
+  const startX = (annotation.startX ?? annotation.x) * bounds.width;
+  const startY = (annotation.startY ?? annotation.y) * bounds.height;
+  const endX = (annotation.endX ?? annotation.x + annotation.width) * bounds.width;
+  const endY = (annotation.endY ?? annotation.y + annotation.height) * bounds.height;
   const angle = Math.atan2(endY - startY, endX - startX);
-  const headLength = 4.5;
+  const headLength = clamp(Math.min(bounds.width, bounds.height) * 0.035, 9, 15);
   const headAngle = Math.PI / 7;
 
   return {
@@ -197,21 +203,23 @@ function AnnotationPreview({
   annotation,
   selected = false,
   coarsePointer = false,
+  bounds,
 }: {
   annotation: DraftAnnotation;
   selected?: boolean;
   coarsePointer?: boolean;
+  bounds: { width: number; height: number };
 }) {
-  const x = annotation.x * 100;
-  const y = annotation.y * 100;
-  const width = annotation.width * 100;
-  const height = annotation.height * 100;
+  const x = annotation.x * bounds.width;
+  const y = annotation.y * bounds.height;
+  const width = annotation.width * bounds.width;
+  const height = annotation.height * bounds.height;
   const selectionStroke = selected ? 'rgba(255,255,255,0.92)' : 'rgba(8,15,30,0.78)';
-  const selectionStrokeWidth = coarsePointer ? (selected ? '3.2' : '2.4') : selected ? '2.6' : '1.9';
-  const accentStrokeWidth = coarsePointer ? '1.5' : '1.1';
+  const selectionStrokeWidth = coarsePointer ? (selected ? 3 : 2.2) : selected ? 2.4 : 1.7;
+  const accentStrokeWidth = coarsePointer ? 1.35 : 1;
 
   if (annotation.shape === 'arrow') {
-    const arrow = getArrowVector(annotation);
+    const arrow = getArrowVector(annotation, bounds);
     const glowStroke = selected ? 'rgba(255,255,255,0.92)' : 'rgba(8,15,30,0.78)';
 
     return (
@@ -222,14 +230,14 @@ function AnnotationPreview({
           x2={arrow.endX}
           y2={arrow.endY}
           stroke={glowStroke}
-          strokeWidth="3.6"
+          strokeWidth={coarsePointer ? 3.2 : 2.8}
           strokeLinecap="round"
         />
         <polyline
           points={`${arrow.headA.x},${arrow.headA.y} ${arrow.endX},${arrow.endY} ${arrow.headB.x},${arrow.headB.y}`}
           fill="none"
           stroke={glowStroke}
-          strokeWidth="3.6"
+          strokeWidth={coarsePointer ? 3.2 : 2.8}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
@@ -239,14 +247,14 @@ function AnnotationPreview({
           x2={arrow.endX}
           y2={arrow.endY}
           stroke="#7dd3fc"
-          strokeWidth="1.8"
+          strokeWidth={coarsePointer ? 1.5 : 1.2}
           strokeLinecap="round"
         />
         <polyline
           points={`${arrow.headA.x},${arrow.headA.y} ${arrow.endX},${arrow.endY} ${arrow.headB.x},${arrow.headB.y}`}
           fill="none"
           stroke="#7dd3fc"
-          strokeWidth="1.8"
+          strokeWidth={coarsePointer ? 1.5 : 1.2}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
@@ -255,25 +263,27 @@ function AnnotationPreview({
   }
 
   if (annotation.shape === 'pointer') {
-    const centerX = (annotation.endX ?? annotation.x + annotation.width / 2) * 100;
-    const centerY = (annotation.endY ?? annotation.y + annotation.height / 2) * 100;
+    const centerX = (annotation.endX ?? annotation.x + annotation.width / 2) * bounds.width;
+    const centerY = (annotation.endY ?? annotation.y + annotation.height / 2) * bounds.height;
+    const radius = clamp(Math.min(bounds.width, bounds.height) * 0.012, 4, coarsePointer ? 7 : 6);
+    const tailLength = radius * 0.9;
 
     return (
       <>
         <circle
           cx={centerX}
           cy={centerY}
-          r={selected ? 4.8 : 4.2}
+          r={selected ? radius + 0.8 : radius}
           fill="rgba(8,15,30,0.82)"
           stroke={selected ? 'rgba(255,255,255,0.92)' : 'rgba(8,15,30,0.78)'}
-          strokeWidth="1.8"
+          strokeWidth="1.4"
         />
-        <circle cx={centerX} cy={centerY} r="2.5" fill="#7dd3fc" />
+        <circle cx={centerX} cy={centerY} r={radius * 0.5} fill="#7dd3fc" />
         <path
-          d={`M ${centerX} ${centerY + 4.2} L ${centerX - 2.2} ${centerY + 8.4} L ${centerX + 2.2} ${centerY + 8.4} Z`}
+          d={`M ${centerX} ${centerY + radius * 0.75} L ${centerX - radius * 0.38} ${centerY + radius + tailLength} L ${centerX + radius * 0.38} ${centerY + radius + tailLength} Z`}
           fill="#7dd3fc"
           stroke="rgba(8,15,30,0.78)"
-          strokeWidth="0.7"
+          strokeWidth="0.6"
           strokeLinejoin="round"
         />
       </>
@@ -288,7 +298,7 @@ function AnnotationPreview({
           cy={y + height / 2}
           rx={width / 2}
           ry={height / 2}
-          fill="none"
+          fill="rgba(125,211,252,0.055)"
           stroke={selectionStroke}
           strokeWidth={selectionStrokeWidth}
         />
@@ -312,9 +322,9 @@ function AnnotationPreview({
         y={y}
         width={width}
         height={height}
-        fill="rgba(253,224,71,0.24)"
+        fill="rgba(253,224,71,0.16)"
         stroke={selected ? 'rgba(255,255,255,0.96)' : 'rgba(250,204,21,0.95)'}
-        strokeWidth={selected ? '1.6' : '1'}
+        strokeWidth={selected ? 1.5 : 0.9}
       />
     );
   }
@@ -326,7 +336,7 @@ function AnnotationPreview({
         y={y}
         width={width}
         height={height}
-        fill="none"
+        fill="rgba(125,211,252,0.045)"
         stroke={selectionStroke}
         strokeWidth={selectionStrokeWidth}
       />
@@ -349,12 +359,17 @@ export function FocusAnnotationOverlay({
   className,
   toolbarClassName,
   disabled = false,
-  previewAspect: _previewAspect = 1,
+  previewAspect = 1,
   onQuickTap,
   renderToolbar,
 }: FocusAnnotationOverlayProps) {
   const coarsePointer = isCoarsePointer();
+  const overlayRef = useRef<HTMLDivElement>(null);
   const boundsRef = useRef({ width: 1, height: 1 });
+  const [renderBounds, setRenderBounds] = useState({
+    width: Math.max(previewAspect, 0.1) * 100,
+    height: 100,
+  });
   const [shape, setShape] = useState<FocusAnnotationShape | null>(null);
   const [draftAnnotation, setDraftAnnotation] = useState<DraftAnnotation | null>(null);
   const [dragAnchor, setDragAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -366,6 +381,26 @@ export function FocusAnnotationOverlay({
   const selectedAnnotation = selectedAnnotationId
     ? annotations.find((annotation) => annotation.id === selectedAnnotationId)
     : null;
+
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+
+    const updateBounds = () => {
+      const bounds = overlay.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return;
+      const next = { width: bounds.width, height: bounds.height };
+      boundsRef.current = next;
+      setRenderBounds((current) =>
+        current.width === next.width && current.height === next.height ? current : next,
+      );
+    };
+
+    updateBounds();
+    const observer = new ResizeObserver(updateBounds);
+    observer.observe(overlay);
+    return () => observer.disconnect();
+  }, []);
 
   function getNormalizedPoint(event: ReactPointerEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -388,7 +423,7 @@ export function FocusAnnotationOverlay({
     pointerStartRef.current = {
       x: event.clientX,
       y: event.clientY,
-      time: performance.now(),
+      time: event.timeStamp,
     };
 
     const point = getNormalizedPoint(event);
@@ -445,7 +480,7 @@ export function FocusAnnotationOverlay({
       onChange([...annotations, nextAnnotation]);
       setSelectedAnnotationId(nextAnnotation.id);
     } else if (onQuickTap && start && dragAnchor) {
-      const elapsed = performance.now() - start.time;
+      const elapsed = event.timeStamp - start.time;
       const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
       if (elapsed <= QUICK_TAP_DURATION_MS && moved <= QUICK_TAP_MOVE_THRESHOLD_PX) {
         onQuickTap(dragAnchor);
@@ -574,6 +609,7 @@ export function FocusAnnotationOverlay({
 
   return (
     <div
+      ref={overlayRef}
       className={cn('absolute inset-0 touch-none select-none', className)}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -587,7 +623,7 @@ export function FocusAnnotationOverlay({
       )}
 
       <svg
-        viewBox="0 0 100 100"
+        viewBox={`0 0 ${renderBounds.width} ${renderBounds.height}`}
         preserveAspectRatio="none"
         className="pointer-events-none absolute inset-0 size-full"
         aria-hidden
@@ -598,11 +634,16 @@ export function FocusAnnotationOverlay({
               annotation={annotation}
               selected={selectedAnnotationId === annotation.id}
               coarsePointer={coarsePointer}
+              bounds={renderBounds}
             />
           </g>
         ))}
-        {draftAnnotation && hasUsableAnnotation(draftAnnotation, getBounds()) ? (
-          <AnnotationPreview annotation={draftAnnotation} coarsePointer={coarsePointer} />
+        {draftAnnotation && hasUsableAnnotation(draftAnnotation, renderBounds) ? (
+          <AnnotationPreview
+            annotation={draftAnnotation}
+            coarsePointer={coarsePointer}
+            bounds={renderBounds}
+          />
         ) : null}
       </svg>
     </div>

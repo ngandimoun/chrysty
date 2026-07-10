@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { Camera, Upload } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Camera, Check, Search, Upload } from 'lucide-react';
 
 import { DocumentStrip } from '@/components/astra/document-strip';
 import { touchButtonClass } from '@/components/astra/camera-tool-button';
@@ -20,6 +20,10 @@ import {
   REFERENCE_DOCUMENT_ACCEPT_SCAN,
   REFERENCE_DOCUMENT_ACCEPT_UPLOAD,
 } from '@/lib/documents/types';
+import {
+  GEMINI_LIVE_LANGUAGES,
+  type LanguagePreference,
+} from '@/lib/language/language-resolution';
 import { cn } from '@/lib/utils';
 
 const chipBaseClassName =
@@ -189,10 +193,94 @@ function MultiPresetGroup({
   );
 }
 
+function LanguageSelector({
+  value,
+  onChange,
+}: {
+  value?: LanguagePreference;
+  onChange: (value?: LanguagePreference) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const filtered = GEMINI_LIVE_LANGUAGES.filter((language) => {
+    const needle = query.trim().toLocaleLowerCase();
+    return !needle ||
+      language.label.toLocaleLowerCase().includes(needle) ||
+      language.code.toLocaleLowerCase().includes(needle);
+  });
+
+  return (
+    <div className="relative">
+      <button
+        id="preferred-language"
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls="preferred-language-list"
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-left text-sm"
+      >
+        <span>{value ? `${value.label} (${value.code})` : 'Choose a language'}</span>
+        <Search className="size-4 text-muted-foreground" />
+      </button>
+      {open ? (
+        <div className="absolute z-50 mt-1 w-full rounded-xl border border-border bg-popover p-2 shadow-xl">
+          <div className="flex items-center gap-2 border-b border-border px-2">
+            <Search className="size-4 text-muted-foreground" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search language or code"
+              aria-label="Search languages"
+              className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none"
+            />
+          </div>
+          <div id="preferred-language-list" role="listbox" className="max-h-56 overflow-y-auto py-1">
+            {filtered.map((language) => (
+              <button
+                key={language.code}
+                type="button"
+                role="option"
+                aria-selected={value?.code === language.code}
+                onClick={() => {
+                  onChange(language);
+                  setQuery('');
+                  setOpen(false);
+                }}
+                className="flex min-h-10 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-accent"
+              >
+                <span>{language.label}</span>
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {language.code}
+                  {value?.code === language.code ? <Check className="size-4 text-primary" /> : null}
+                </span>
+              </button>
+            ))}
+          </div>
+          {value ? (
+            <button
+              type="button"
+              onClick={() => {
+                onChange(undefined);
+                setOpen(false);
+              }}
+              className="mt-1 w-full rounded-lg px-2 py-2 text-left text-xs text-muted-foreground hover:bg-accent"
+            >
+              Use device/request language
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function PersonalizationForm({ active = true }: PersonalizationFormProps) {
   const {
     profile,
     updateField,
+    updatePreferredLanguage,
     updateInteractionPreference,
     toggleInteractionPreference,
   } = useCompanionProfile();
@@ -245,13 +333,7 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-1 pb-2">
       <section className="flex flex-col gap-3">
-        <div>
-          <h3 className="text-sm font-medium text-foreground">Basics</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Helps Chrysty address you and tailor suggestions. Interests and occupation also help
-            Chrysty recommend sister apps when relevant. Everything is optional.
-          </p>
-        </div>
+        <h3 className="text-sm font-medium text-foreground">Basics</h3>
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="preferred-name">
@@ -276,20 +358,23 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
             placeholder="Nurse, student, parent…"
           />
         </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="preferred-language">Preferred language</Label>
+          <div>
+            <LanguageSelector
+              value={profile.preferredLanguage}
+              onChange={updatePreferredLanguage}
+            />
+          </div>
+        </div>
       </section>
 
       <section className="flex flex-col gap-4 rounded-2xl border border-border bg-muted/40 p-3">
-        <div>
-          <h3 className="text-sm font-medium text-foreground">How Chrysty should interact with you</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Pick quick presets for the vibe, depth, and role you want. Add custom details when the
-            presets do not capture your style.
-          </p>
-        </div>
+        <h3 className="text-sm font-medium text-foreground">How Chrysty should interact with you</h3>
 
         <SinglePresetGroup
           label="Response depth"
-          description="How much detail Chrysty should usually give."
           options={RESPONSE_DEPTH_OPTIONS}
           value={interactionPreferences.responseDepth}
           onSelect={(value) => selectInteractionPreference('responseDepth', value)}
@@ -297,7 +382,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
 
         <MultiPresetGroup
           label="Tone"
-          description="Choose one or combine a few."
           options={TONE_OPTIONS}
           values={interactionPreferences.tones}
           onToggle={(value) => toggleInteractionPreset('tones', value)}
@@ -305,7 +389,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
 
         <SinglePresetGroup
           label="Relationship mode"
-          description="The kind of companion energy you prefer."
           options={RELATIONSHIP_MODE_OPTIONS}
           value={interactionPreferences.relationshipMode}
           onSelect={(value) => selectInteractionPreference('relationshipMode', value)}
@@ -313,7 +396,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
 
         <MultiPresetGroup
           label="Guidance style"
-          description="How Chrysty should help you move forward."
           options={GUIDANCE_STYLE_OPTIONS}
           values={interactionPreferences.guidanceStyles}
           onToggle={(value) => toggleInteractionPreset('guidanceStyles', value)}
@@ -321,7 +403,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
 
         <MultiPresetGroup
           label="Expertise lens"
-          description="Useful when you want Chrysty to frame answers through a role."
           options={EXPERTISE_LENS_OPTIONS}
           values={interactionPreferences.expertiseLenses}
           onToggle={(value) => toggleInteractionPreset('expertiseLenses', value)}
@@ -329,7 +410,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
 
         <SinglePresetGroup
           label="Output format"
-          description="Preferred shape for visual answers."
           options={OUTPUT_FORMAT_OPTIONS}
           value={interactionPreferences.outputFormat}
           onSelect={(value) => selectInteractionPreference('outputFormat', value)}
@@ -372,9 +452,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
             placeholder="For important decisions, ask me two clarifying questions first. For casual chat, keep it light."
             className="min-h-24"
           />
-          <p className="text-xs text-muted-foreground">
-            Chrysty will use these preferences when they fit the current request.
-          </p>
         </div>
       </section>
 
@@ -408,9 +485,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
               placeholder="Nut allergy, diabetic — only if you want me to know"
               className="min-h-20"
             />
-            <p className="text-xs text-muted-foreground">
-              Stored on this device only. Skip anything you are not comfortable sharing.
-            </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -518,7 +592,6 @@ export function PersonalizationForm({ active = true }: PersonalizationFormProps)
         )}
       </section>
 
-      <p className="text-xs text-muted-foreground">Auto-saved on this device.</p>
     </div>
   );
 }

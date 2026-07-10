@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { resolveActiveAstraKey, uploadAstraKeyHeaders } from '@/lib/astra/identity';
+import { astraFetch } from '@/lib/astra/api-client';
 import {
   primeAudioForVoiceSession,
   unlockSharedAudioContextSync,
@@ -13,11 +14,18 @@ import { loadCompanionProfileForRequest } from '@/lib/client/append-reference-do
 import { collectUserContextForRequest } from '@/lib/client/collect-user-context';
 import { getLiveWebSocketUrl, isLiveJourneyDebugEnabled } from '@/lib/gemini/config';
 import { buildUserContext } from '@/lib/gemini/user-context';
+import type { UserContext } from '@/lib/gemini/user-context';
+import {
+  buildLiveUserContextRefreshPayload,
+  isLiveUserContextStale,
+  USER_CONTEXT_REFRESH_CHECK_MS,
+} from '@/lib/live/user-context-refresh';
 import type {
   LiveClientEvent,
   LiveDelegationStage,
   LiveSessionPhase,
 } from '@/lib/live/types';
+import type { WorkspaceUiContext } from '@/lib/live/workspace-context';
 import {
   LIVE_RESUMPTION_STORAGE_KEY,
   LIVE_SESSION_STORAGE_KEY,
@@ -39,6 +47,24 @@ const MAX_RECONNECT_ATTEMPTS = 8;
 const CONNECT_TIMEOUT_MS = 25000;
 const FRAME_IDLE_INTERVAL_MS = 1000;
 const FRAME_SPEAKING_INTERVAL_MS = 400;
+const MAX_LIVE_FOCUS_ANNOTATIONS = 8;
+const MAX_LIVE_CAPTURE_ID_CHARS = 96;
+
+function boundedFocusAnnotations(capture: VisualCapture) {
+  return capture.focusAnnotations?.slice(0, MAX_LIVE_FOCUS_ANNOTATIONS).map((annotation) => ({
+    ...annotation,
+    id: annotation.id.slice(0, 64),
+  }));
+}
+
+function immutableVisualCapture(capture: VisualCapture): VisualCapture {
+  const focusAnnotations = boundedFocusAnnotations(capture);
+  return {
+    ...capture,
+    imageId: capture.imageId?.slice(0, MAX_LIVE_CAPTURE_ID_CHARS),
+    ...(focusAnnotations ? { focusAnnotations } : {}),
+  };
+}
 
 interface UseGeminiLiveOptions {
   stream: MediaStream | null | undefined;
@@ -77,6 +103,8 @@ export interface UseGeminiLiveResult {
   reset: () => void;
   sendCapture: (capture: VisualCapture) => Promise<boolean>;
   notifyBackgroundCompletion: (title: string, summary?: string | null) => boolean;
+  notifyCapabilityDue: (id: string, revision: number, title: string) => boolean;
+  updateWorkspaceContext: (context: WorkspaceUiContext | null) => Promise<boolean>;
   sendMonitorTurn: (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>;
   sendBootstrapTurn: (capture: VisualCapture | null) => Promise<{ ok: boolean; error?: string }>;
 }
@@ -164,9 +192,13 @@ export function useGeminiLive({
   const explanationImageUrlsRef = useRef<string[]>([]);
   const frameTimerRef = useRef<number | null>(null);
   const lastFrameSentAtRef = useRef(0);
+  const latestLiveCameraFrameRef = useRef<VisualCapture | null>(null);
   const isModelSpeakingRef = useRef(false);
   const handshakeCompleteRef = useRef(false);
   const pendingAudioRef = useRef<Array<{ data: string; sample_rate: number }>>([]);
+  const userContextRefreshTimerRef = useRef<number | null>(null);
+  const latestUserContextRef = useRef<UserContext | null>(null);
+  const userContextRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
     isModelSpeakingRef.current = isModelSpeaking;
@@ -270,6 +302,47 @@ export function useGeminiLive({
     }
   }, []);
 
+  const stopUserContextRefreshTimer = useCallback(() => {
+    if (userContextRefreshTimerRef.current !== null) {
+      window.clearInterval(userContextRefreshTimerRef.current);
+      userContextRefreshTimerRef.current = null;
+    }
+  }, []);
+
+  const refreshLiveUserContext = useCallback(async () => {
+    const ws = wsRef.current;
+    if (
+      !ws ||
+      ws.readyState !== WebSocket.OPEN ||
+      !handshakeCompleteRef.current ||
+      userContextRefreshInFlightRef.current ||
+      !isLiveUserContextStale(latestUserContextRef.current)
+    ) {
+      return false;
+    }
+
+    userContextRefreshInFlightRef.current = true;
+    try {
+      const refreshed = buildUserContext(await collectUserContextForRequest());
+      latestUserContextRef.current = refreshed;
+      ws.send(JSON.stringify(buildLiveUserContextRefreshPayload(refreshed)));
+      debugLiveJourney('user_context_refreshed', {
+        geolocation_status: refreshed.geolocationStatus,
+        has_coordinates: Boolean(refreshed.coordinates),
+      });
+      return true;
+    } finally {
+      userContextRefreshInFlightRef.current = false;
+    }
+  }, []);
+
+  const startUserContextRefreshTimer = useCallback(() => {
+    stopUserContextRefreshTimer();
+    userContextRefreshTimerRef.current = window.setInterval(() => {
+      void refreshLiveUserContext();
+    }, USER_CONTEXT_REFRESH_CHECK_MS);
+  }, [refreshLiveUserContext, stopUserContextRefreshTimer]);
+
   const closeWebSocket = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current);
@@ -304,7 +377,13 @@ export function useGeminiLive({
 
       debugLiveJourney('delegation_sse_open', { turn_id: turnId });
 
-      const visuals = (await getVisualCaptureRef.current?.()) ?? [];
+      const requestedVisuals = (await getVisualCaptureRef.current?.()) ?? [];
+      const visuals =
+        requestedVisuals.length > 0
+          ? requestedVisuals
+          : latestLiveCameraFrameRef.current
+            ? [immutableVisualCapture(latestLiveCameraFrameRef.current)]
+            : [];
       const form = new FormData();
       form.set('turn_id', turnId);
       form.set(
@@ -314,6 +393,10 @@ export function useGeminiLive({
             imageId: visual.imageId,
             width: visual.width,
             height: visual.height,
+            captureMode: visual.captureMode,
+            ...(visual.focusAnnotations?.length
+              ? { focusAnnotations: boundedFocusAnnotations(visual) }
+              : {}),
           })),
         ),
       );
@@ -359,6 +442,7 @@ export function useGeminiLive({
             physicalTask: visualsPayload.physicalTask,
             visualGuidance: visualsPayload.visualGuidance,
             userImages,
+            artifactLanguage: visualsPayload.artifactLanguage,
           });
         },
         onExplanationDelta: (text) => {
@@ -383,6 +467,7 @@ export function useGeminiLive({
             physicalTask: visualsPayload.physicalTask,
             visualGuidance: visualsPayload.visualGuidance,
             userImages,
+            artifactLanguage: visualsPayload.artifactLanguage,
           });
         },
         onLiveGuide: (update) => {
@@ -427,15 +512,23 @@ export function useGeminiLive({
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-    const prepared = visual;
+    const prepared = immutableVisualCapture(visual);
     const data = await blobToBase64(prepared.blob);
     ws.send(
       JSON.stringify({
         type: 'image',
         data,
         mimeType: prepared.mimeType,
+        imageId: prepared.imageId,
+        width: prepared.width,
+        height: prepared.height,
+        captureMode: prepared.captureMode,
+        ...(prepared.focusAnnotations?.length
+          ? { focusAnnotations: prepared.focusAnnotations }
+          : {}),
       }),
     );
+    latestLiveCameraFrameRef.current = prepared;
     lastFrameSentAtRef.current = performance.now();
   }, []);
 
@@ -474,6 +567,53 @@ export function useGeminiLive({
       }),
     );
     return true;
+  }, []);
+
+  const notifyCapabilityDue = useCallback((id: string, revision: number, title: string): boolean => {
+    const ws = wsRef.current;
+    if (
+      !ws ||
+      ws.readyState !== WebSocket.OPEN ||
+      !handshakeCompleteRef.current ||
+      isModelSpeakingRef.current
+    ) {
+      return false;
+    }
+    ws.send(
+      JSON.stringify({
+        type: 'text',
+        text: `[Chrysty scheduled event ${id}:${revision}] "${title}" is due now. Tell the user naturally in one brief sentence. Do not repeat this event or mention internal systems.`,
+      }),
+    );
+    return true;
+  }, []);
+
+  const updateWorkspaceContext = useCallback(async (
+    context: WorkspaceUiContext | null,
+  ): Promise<boolean> => {
+    const sessionId =
+      typeof window !== 'undefined' ? sessionStorage.getItem(LIVE_SESSION_STORAGE_KEY) : null;
+    if (!sessionId) return false;
+
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'ui_context_update',
+        ui_context: context,
+      }));
+    }
+
+    const response = context
+      ? await astraFetch('/api/astra/ui-context', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, ui_context: context }),
+        })
+      : await astraFetch(
+          `/api/astra/ui-context?session_id=${encodeURIComponent(sessionId)}`,
+          { method: 'DELETE' },
+        );
+    return response.ok;
   }, []);
 
   const startFrameTimer = useCallback(() => {
@@ -637,8 +777,15 @@ export function useGeminiLive({
         beginDelegationStream(event.pending_turn_id);
       }
       startFrameTimer();
+      startUserContextRefreshTimer();
     },
-    [beginDelegationStream, drainPendingAudio, startFrameTimer, startMicCapture],
+    [
+      beginDelegationStream,
+      drainPendingAudio,
+      startFrameTimer,
+      startMicCapture,
+      startUserContextRefreshTimer,
+    ],
   );
 
   const openWebSocket = useCallback(async (): Promise<ConnectResult> => {
@@ -693,6 +840,7 @@ export function useGeminiLive({
 
     const userContextFields = await collectUserContextForRequest();
     const userContext = buildUserContext(userContextFields);
+    latestUserContextRef.current = userContext;
     const companionProfile = await loadCompanionProfileForRequest();
     const mode = getRequestModeRef.current?.() ?? 'default';
 
@@ -783,6 +931,7 @@ export function useGeminiLive({
         pendingMediaStreamRef.current = null;
         stopPcmCapture();
         stopFrameTimer();
+        stopUserContextRefreshTimer();
         getPlayer().clear();
         setIsModelSpeaking(false);
 
@@ -817,6 +966,7 @@ export function useGeminiLive({
     handleClientEvent,
     stopFrameTimer,
     stopPcmCapture,
+    stopUserContextRefreshTimer,
     stream,
   ]);
   useEffect(() => {
@@ -843,17 +993,26 @@ export function useGeminiLive({
     pendingMediaStreamRef.current = null;
     handshakeCompleteRef.current = false;
     pendingAudioRef.current = [];
+    latestLiveCameraFrameRef.current = null;
     clearResumptionHandle();
     stopDelegationStream();
     closeWebSocket();
     stopPcmCapture();
     stopFrameTimer();
+    stopUserContextRefreshTimer();
     getPlayer().clear();
     setIsModelSpeaking(false);
     setTranscriptChunks([]);
     setDelegation(null);
     setPhase('idle');
-  }, [closeWebSocket, getPlayer, stopDelegationStream, stopFrameTimer, stopPcmCapture]);
+  }, [
+    closeWebSocket,
+    getPlayer,
+    stopDelegationStream,
+    stopFrameTimer,
+    stopPcmCapture,
+    stopUserContextRefreshTimer,
+  ]);
 
   const reset = useCallback(() => {
     disconnect();
@@ -880,6 +1039,16 @@ export function useGeminiLive({
   );
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshLiveUserContext();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [refreshLiveUserContext]);
+
+  useEffect(() => {
     const onPageHide = () => {
       intentionalCloseRef.current = true;
       const ws = wsRef.current;
@@ -898,12 +1067,20 @@ export function useGeminiLive({
       closeWebSocket();
       stopPcmCapture();
       stopFrameTimer();
+      stopUserContextRefreshTimer();
       stopDelegationStream();
       void playerRef.current?.close();
       playerRef.current = null;
       clearExplanationImages();
     };
-  }, [clearExplanationImages, closeWebSocket, stopDelegationStream, stopFrameTimer, stopPcmCapture]);
+  }, [
+    clearExplanationImages,
+    closeWebSocket,
+    stopDelegationStream,
+    stopFrameTimer,
+    stopPcmCapture,
+    stopUserContextRefreshTimer,
+  ]);
 
   return {
     phase,
@@ -920,6 +1097,8 @@ export function useGeminiLive({
     reset,
     sendCapture,
     notifyBackgroundCompletion,
+    notifyCapabilityDue,
+    updateWorkspaceContext,
     sendMonitorTurn: sendVisualOverSocket,
     sendBootstrapTurn: sendVisualOverSocket,
   };

@@ -64,6 +64,14 @@ function finalize(checks: BenchmarkValidationCheck[]): BenchmarkValidationResult
   };
 }
 
+function onePrimaryDocumentCheck(docs: BenchmarkDocumentRow[]): BenchmarkValidationCheck {
+  return check(
+    'one-primary-document',
+    docs.length === 1 && textDocs(docs).length === 1,
+    `expected exactly one primary text document, got ${docs.length} total / ${textDocs(docs).length} text`,
+  );
+}
+
 export function validateResearchComparisonTable(docs: BenchmarkDocumentRow[]): BenchmarkValidationResult {
   const checks: BenchmarkValidationCheck[] = [];
   const texts = textDocs(docs);
@@ -121,7 +129,7 @@ export function validateChartMarketTrends(docs: BenchmarkDocumentRow[]): Benchma
 }
 
 export function validateMathPhysicsProjectile(docs: BenchmarkDocumentRow[]): BenchmarkValidationResult {
-  const checks: BenchmarkValidationCheck[] = [];
+  const checks: BenchmarkValidationCheck[] = [onePrimaryDocumentCheck(docs)];
   const combined = allTextContent(docs);
 
   checks.push(
@@ -146,7 +154,7 @@ export function validateMathPhysicsProjectile(docs: BenchmarkDocumentRow[]): Ben
 }
 
 export function validateCodeMonteCarlo(docs: BenchmarkDocumentRow[]): BenchmarkValidationResult {
-  const checks: BenchmarkValidationCheck[] = [];
+  const checks: BenchmarkValidationCheck[] = [onePrimaryDocumentCheck(docs)];
   const combined = allTextContent(docs);
 
   checks.push(
@@ -185,7 +193,7 @@ export function validateStudyKitMulti(docs: BenchmarkDocumentRow[]): BenchmarkVa
 }
 
 export function validateBudgetSpreadsheetStyle(docs: BenchmarkDocumentRow[]): BenchmarkValidationResult {
-  const checks: BenchmarkValidationCheck[] = [];
+  const checks: BenchmarkValidationCheck[] = [onePrimaryDocumentCheck(docs)];
   const combined = allTextContent(docs);
 
   checks.push(
@@ -214,6 +222,7 @@ export function validateVisualTravelGuide(
   pexelsConfigured: boolean,
 ): BenchmarkValidationResult {
   const checks: BenchmarkValidationCheck[] = [];
+  checks.push(onePrimaryDocumentCheck(docs));
   const texts = textDocs(docs);
 
   checks.push(

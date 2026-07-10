@@ -43,6 +43,7 @@ export interface GeneratedDocumentItem {
   kind: GeneratedDocumentKind;
   kindLabel: string;
   createdAt: number;
+  updatedAt: number;
   readAt: number | null;
   mimeType?: string;
   previewUrl: string | null;
@@ -73,10 +74,16 @@ function metaToRecord(meta: RemoteGeneratedDocumentMeta): GeneratedDocumentRecor
     kind: meta.kind,
     title: meta.title,
     createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
     readAt: meta.readAt ?? null,
     mimeType: meta.mimeType,
     jsonPayload: meta.jsonPayload,
     jobId: meta.jobId ?? null,
+    revision: meta.revision,
+    sourceKey: meta.sourceKey,
+    sourceMetadata: meta.sourceMetadata,
+    auditMetadata: meta.auditMetadata,
+    artifactLanguage: meta.artifactLanguage,
   };
 }
 
@@ -94,6 +101,7 @@ function toItem(record: GeneratedDocumentRecord): GeneratedDocumentItem {
     kind: record.kind,
     kindLabel: kindLabel(record.kind),
     createdAt: record.createdAt,
+    updatedAt: record.updatedAt ?? record.createdAt,
     readAt: record.readAt ?? null,
     mimeType: record.mimeType,
     previewUrl,
@@ -123,7 +131,9 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
     (records: GeneratedDocumentRecord[]) => {
       revokePreviewUrls();
       recordsRef.current = new Map(records.map((record) => [record.id, record]));
-      const items = records.map(toItem);
+      const items = records
+        .map(toItem)
+        .sort((a, b) => b.updatedAt - a.updatedAt || Number(!b.readAt) - Number(!a.readAt));
       previewUrlsRef.current = items
         .map((item) => item.previewUrl)
         .filter((url): url is string => Boolean(url && url.startsWith('blob:')));
@@ -179,14 +189,18 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
         return cached ?? null;
       }
       const record = await fetchRemoteGeneratedRecord(id);
-      recordsRef.current.set(id, record);
-      return record;
+      const hydrated = {
+        ...record,
+        revision: cached?.revision ?? record.revision,
+      };
+      recordsRef.current.set(id, hydrated);
+      return hydrated;
     },
     [remoteEnabled],
   );
 
   const applyDocumentPatch = useCallback(
-    (id: string, patch: { title?: string; jsonPayload?: string }) => {
+    (id: string, patch: { title?: string; jsonPayload?: string; revision?: number; updatedAt?: number }) => {
       const record = recordsRef.current.get(id);
       if (record) {
         recordsRef.current = new Map(recordsRef.current);
@@ -194,6 +208,8 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
           ...record,
           ...(typeof patch.title === 'string' ? { title: patch.title } : {}),
           ...(typeof patch.jsonPayload === 'string' ? { jsonPayload: patch.jsonPayload } : {}),
+          ...(typeof patch.revision === 'number' ? { revision: patch.revision } : {}),
+          ...(typeof patch.updatedAt === 'number' ? { updatedAt: patch.updatedAt } : {}),
         });
       }
 
@@ -204,13 +220,16 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
             ...doc.record,
             ...(typeof patch.title === 'string' ? { title: patch.title } : {}),
             ...(typeof patch.jsonPayload === 'string' ? { jsonPayload: patch.jsonPayload } : {}),
+            ...(typeof patch.revision === 'number' ? { revision: patch.revision } : {}),
+            ...(typeof patch.updatedAt === 'number' ? { updatedAt: patch.updatedAt } : {}),
           };
           return {
             ...doc,
             ...(typeof patch.title === 'string' ? { title: patch.title } : {}),
+            ...(typeof patch.updatedAt === 'number' ? { updatedAt: patch.updatedAt } : {}),
             record: nextRecord,
           };
-        }),
+        }).sort((a, b) => b.updatedAt - a.updatedAt || Number(!b.readAt) - Number(!a.readAt)),
       );
     },
     [],
@@ -368,10 +387,13 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
           const meta = await updateRemoteGeneratedDocument(id, {
             title: nextTitle,
             jsonPayload: nextJsonPayload,
+            expectedRevision: existing.revision ?? 1,
           });
           applyDocumentPatch(id, {
             title: meta.title,
             jsonPayload: meta.jsonPayload,
+            revision: meta.revision,
+            updatedAt: meta.updatedAt,
           });
         } else {
           const updated = await updateLocalGeneratedDocument(id, {
@@ -381,6 +403,8 @@ export function useGeneratedDocuments(): UseGeneratedDocumentsResult {
           applyDocumentPatch(id, {
             title: updated.title,
             jsonPayload: updated.jsonPayload,
+            revision: updated.revision,
+            updatedAt: updated.updatedAt ?? Date.now(),
           });
         }
       } catch {

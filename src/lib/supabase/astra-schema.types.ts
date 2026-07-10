@@ -28,6 +28,8 @@ export interface AstraCompanionProfileRow {
   user_id: string | null;
   preferred_name: string | null;
   occupation: string | null;
+  preferred_language_code: string | null;
+  preferred_language_label: string | null;
   food_preferences: string | null;
   health_notes: string | null;
   interests: string | null;
@@ -64,6 +66,13 @@ export interface AstraGeneratedDocumentRow {
   job_id: string | null;
   created_at: string;
   read_at: string | null;
+  revision: number;
+  updated_at: string;
+  last_mutation: Record<string, unknown> | null;
+  source_key: string | null;
+  source_metadata: Record<string, unknown>;
+  audit_metadata: Record<string, unknown>;
+  artifact_language: string;
 }
 
 export interface AstraConversationTurnRow {
@@ -76,4 +85,27 @@ export interface AstraConversationTurnRow {
   has_images: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
+}
+
+export interface AstraScheduledCapabilityRow {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  astra_key: string;
+  kind: 'timer' | 'reminder' | 'checkpoint';
+  title: string;
+  fire_at: string;
+  timezone: string;
+  status: 'scheduled' | 'snoozed' | 'due' | 'completed' | 'canceled';
+  revision: number;
+  idempotency_key: string;
+  task_id: string | null;
+  session_id: string | null;
+  due_at: string | null;
+  completed_at: string | null;
+  canceled_at: string | null;
+  delivered_at: string | null;
+  audit_metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 }

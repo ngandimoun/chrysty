@@ -9,6 +9,31 @@ export interface WeatherResult {
   windSpeedMps: number;
 }
 
+export type WeatherLocationSelection =
+  | { kind: 'named'; query: string }
+  | { kind: 'coordinates'; query: string }
+  | null;
+
+export function selectWeatherLocation(options: {
+  location?: string;
+  latitude?: number;
+  longitude?: number;
+}): WeatherLocationSelection {
+  const namedLocation = options.location?.trim();
+  if (namedLocation) {
+    return { kind: 'named', query: `q=${encodeURIComponent(namedLocation)}` };
+  }
+
+  const hasCoords =
+    options.latitude !== undefined &&
+    options.longitude !== undefined &&
+    Number.isFinite(options.latitude) &&
+    Number.isFinite(options.longitude);
+  return hasCoords
+    ? { kind: 'coordinates', query: `lat=${options.latitude}&lon=${options.longitude}` }
+    : null;
+}
+
 export async function fetchCurrentWeather(options: {
   location?: string;
   latitude?: number;
@@ -19,23 +44,13 @@ export async function fetchCurrentWeather(options: {
     throw new Error('Weather API is not configured.');
   }
 
-  const hasCoords =
-    options.latitude !== undefined &&
-    options.longitude !== undefined &&
-    Number.isFinite(options.latitude) &&
-    Number.isFinite(options.longitude);
+  const selectedLocation = selectWeatherLocation(options);
 
-  const query = hasCoords
-    ? `lat=${options.latitude}&lon=${options.longitude}`
-    : options.location?.trim()
-      ? `q=${encodeURIComponent(options.location.trim())}`
-      : null;
-
-  if (!query) {
+  if (!selectedLocation) {
     throw new Error('Provide a location name or latitude/longitude.');
   }
 
-  const url = `https://api.openweathermap.org/data/2.5/weather?${query}&appid=${apiKey}&units=metric`;
+  const url = `https://api.openweathermap.org/data/2.5/weather?${selectedLocation.query}&appid=${apiKey}&units=metric`;
   const response = await fetch(url);
 
   if (!response.ok) {

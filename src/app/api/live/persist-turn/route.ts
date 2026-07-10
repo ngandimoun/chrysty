@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { insertConversationTurn } from '@/lib/astra/db/conversation-history';
 import { requireLiveServiceAuth } from '@/lib/live/auth';
+import { getLiveSession } from '@/lib/live/db';
 import { resolveLiveAstraIdentity } from '@/lib/live/identity';
 import { persistTurnToMem0 } from '@/lib/mem0/persist';
 import { getMem0MemoryUserId } from '@/lib/mem0/identity';
@@ -27,15 +28,27 @@ export async function POST(request: Request) {
   };
 
   const astraKey = body.astra_key?.trim();
+  const sessionId = body.session_id?.trim();
   const userTranscript = body.user_transcript?.trim();
   const assistantSpoken = body.assistant_spoken?.trim() ?? '';
 
-  if (!astraKey || !userTranscript) {
-    return NextResponse.json({ error: 'astra_key and user_transcript are required.' }, { status: 400 });
+  if (!astraKey || !sessionId || !userTranscript) {
+    return NextResponse.json(
+      { error: 'astra_key, session_id, and user_transcript are required.' },
+      { status: 400 },
+    );
   }
 
   const identity = await resolveLiveAstraIdentity(request, astraKey);
   if (identity instanceof NextResponse) return identity;
+  const session = await getLiveSession(sessionId);
+  if (
+    !session ||
+    session.astra_key !== identity.astraKey ||
+    session.workspace_id !== identity.workspaceId
+  ) {
+    return NextResponse.json({ error: 'Live session not found.' }, { status: 404 });
+  }
 
   await insertConversationTurn({
     workspaceId: identity.workspaceId,
@@ -46,7 +59,7 @@ export async function POST(request: Request) {
     hasImages: body.has_images ?? false,
     metadata: {
       source: 'live',
-      session_id: body.session_id ?? null,
+      session_id: sessionId,
       ...(body.metadata ?? {}),
     },
   });

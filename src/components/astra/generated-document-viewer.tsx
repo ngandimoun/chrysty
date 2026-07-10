@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { Copy, Download, Pencil, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { DocumentCopyFeedback } from '@/components/astra/document-copy-feedback';
 import { DocumentMarkdownToolbar } from '@/components/astra/document-markdown-toolbar';
@@ -31,6 +31,10 @@ import type {
 } from '@/lib/documents/generated-document-types';
 import { parseStockImageGroups } from '@/lib/visuals/stock-images';
 import { cn } from '@/lib/utils';
+import {
+  createWorkspaceUiContext,
+  type WorkspaceUiContext,
+} from '@/lib/live/workspace-context';
 
 const ExplanationChart = dynamic(
   () => import('@/components/astra/explanation-chart').then((mod) => mod.ExplanationChart),
@@ -55,11 +59,17 @@ const RichExplanationContent = dynamic(
   },
 );
 
+const CodeExecutionImageView = dynamic(
+  () => import('@/components/astra/code-execution-image').then((mod) => mod.CodeExecutionImageView),
+  { ssr: false },
+);
+
 interface GeneratedDocumentViewerProps {
   document: GeneratedDocumentItem;
   onDismiss: () => void;
   onUpdate?: (id: string, patch: { title?: string; fullText?: string }) => Promise<void>;
   onCopy?: (id: string) => Promise<boolean>;
+  onWorkspaceContextChange?: (context: WorkspaceUiContext | null) => void;
 }
 
 function parseJson<T>(raw: string | undefined): T | null {
@@ -126,6 +136,7 @@ export function GeneratedDocumentViewer({
   onDismiss,
   onUpdate,
   onCopy,
+  onWorkspaceContextChange,
 }: GeneratedDocumentViewerProps) {
   const [fetchedRecord, setFetchedRecord] = useState<{
     id: string;
@@ -134,22 +145,15 @@ export function GeneratedDocumentViewer({
   const [isEditing, setIsEditing] = useState(false);
   const [editMode, setEditMode] = useState<'preview' | 'edit'>('preview');
   const [editTitle, setEditTitle] = useState(document.title);
-  const [editBody, setEditBody] = useState('');
+  const [editBody, setEditBody] = useState(() => getDocumentFullText(document.record));
   const [isSaving, setIsSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
 
   const hydratedRecord =
     fetchedRecord?.id === document.id ? fetchedRecord.record : document.record;
-
-  useEffect(() => {
-    setIsEditing(false);
-    setEditMode('preview');
-    setEditTitle(document.title);
-    setEditBody(getDocumentFullText(document.record));
-    setCopied(false);
-  }, [document.id, document.title, document.record]);
 
   useEffect(() => {
     const needsHydration =
@@ -180,13 +184,6 @@ export function GeneratedDocumentViewer({
       cancelled = true;
     };
   }, [document]);
-
-  useEffect(() => {
-    if (!isEditing) {
-      setEditBody(getDocumentFullText(hydratedRecord));
-      setEditTitle(document.title);
-    }
-  }, [document.title, hydratedRecord, isEditing]);
 
   const audioUrl = useMemo(() => {
     if (document.kind !== 'audio' || !hydratedRecord.blob) return null;
@@ -221,6 +218,49 @@ export function GeneratedDocumentViewer({
     isEditing &&
     (editTitle.trim() !== document.title.trim() || editBody !== savedBody);
   const canEdit = document.kind === 'text' && Boolean(onUpdate);
+
+  const publishContext = useCallback((selectedPassage = '', fullText = savedBody) => {
+    onWorkspaceContextChange?.(createWorkspaceUiContext({
+      source: 'generated_document',
+      documentId: document.id,
+      title: document.title,
+      revision: document.record.revision ?? 1,
+      selectedPassage,
+      fullText,
+      saved: true,
+      artifactLanguage: document.record.artifactLanguage,
+    }));
+  }, [
+    document.id,
+    document.record.revision,
+    document.record.artifactLanguage,
+    document.title,
+    onWorkspaceContextChange,
+    savedBody,
+  ]);
+
+  useEffect(() => {
+    publishContext();
+    return () => onWorkspaceContextChange?.(null);
+  }, [onWorkspaceContextChange, publishContext]);
+
+  const publishSelection = () => {
+    const textarea = textareaRef.current;
+    if (textarea && window.document.activeElement === textarea) {
+      publishContext(
+        editBody.slice(textarea.selectionStart, textarea.selectionEnd),
+        editBody,
+      );
+      return;
+    }
+    const selection = window.getSelection();
+    const node = selection?.anchorNode;
+    if (!selection || selection.isCollapsed || !node || !viewerRef.current?.contains(node)) {
+      publishContext();
+      return;
+    }
+    publishContext(selection.toString());
+  };
 
   const handleCopy = async () => {
     const success = onCopy
@@ -341,6 +381,9 @@ export function GeneratedDocumentViewer({
       </div>
 
       <div
+        ref={viewerRef}
+        onMouseUp={publishSelection}
+        onKeyUp={publishSelection}
         className="w-full scroll-smooth
           min-h-[min(72vw,18rem)] max-h-[min(62vh,28rem)]
           sm:min-h-72 sm:max-h-128 md:min-h-80 md:max-h-144
@@ -442,6 +485,27 @@ export function GeneratedDocumentViewer({
                 }
               >
                 <WebSourcesList citations={textPayload.webCitations} />
+              </div>
+            ) : null}
+            {textPayload.canvas?.charts.length ? (
+              <div className="mt-5 space-y-3">
+                {textPayload.canvas.charts.map((chart, index) => (
+                  <ExplanationChart key={chart.id ?? `saved-chart-${index}`} chart={chart} index={index} />
+                ))}
+              </div>
+            ) : null}
+            {textPayload.canvas?.codeImages.length ? (
+              <div className="mt-5 space-y-3">
+                {textPayload.canvas.codeImages.map((image, index) => (
+                  <CodeExecutionImageView key={`saved-code-image-${index}`} image={image} index={index} />
+                ))}
+              </div>
+            ) : null}
+            {textPayload.canvas?.places.length ? (
+              <div className="mt-5 space-y-3">
+                {textPayload.canvas.places.map((place, index) => (
+                  <PlaceCard key={place.placeId ?? place.url ?? `${place.name}-${index}`} place={place} index={index} />
+                ))}
               </div>
             ) : null}
           </>

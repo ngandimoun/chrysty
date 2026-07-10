@@ -526,7 +526,16 @@ export async function POST(request: Request) {
         try {
           const client = new GoogleGenAI({ apiKey: getGeminiApiKey() });
 
-          const { payload, ttsPrompt, transcript, understandingMs, sttMs, llmMs, grounding } =
+          const {
+            payload,
+            ttsPrompt,
+            transcript,
+            understandingMs,
+            sttMs,
+            llmMs,
+            grounding,
+            artifactLanguage,
+          } =
             await buildVoiceResponseFromMultimodal(
             client,
             audioBytes,
@@ -675,6 +684,7 @@ export async function POST(request: Request) {
                   stockImages,
                   webCitations,
                   customToolCalls,
+                  artifactLanguage,
                 }),
               ),
             );
@@ -697,6 +707,7 @@ export async function POST(request: Request) {
                   stockImages,
                   webCitations,
                   customToolCalls,
+                  artifactLanguage,
                 }),
               ),
             );

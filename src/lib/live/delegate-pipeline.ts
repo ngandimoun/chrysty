@@ -30,6 +30,8 @@ export interface LiveDelegateStreamContext {
   delegation?: DelegationPromptContext;
   ecosystemActivity?: UserEcosystemActivity | null;
   liveGuide?: LiveGuideTurnOptions;
+  explicitArtifactLanguage?: string | null;
+  requestLanguage?: string | null;
   onStage?: (stage: LiveDelegationStage) => void | Promise<void>;
 }
 
@@ -72,7 +74,7 @@ export async function streamLiveDelegationToEncoder(
 
   await emitStage('analyzing');
 
-  const { payload, transcript, grounding } = await buildVoiceResponseFromMultimodal(
+  const { payload, transcript, grounding, artifactLanguage } = await buildVoiceResponseFromMultimodal(
     client,
     Buffer.alloc(0),
     'audio/wav',
@@ -85,7 +87,13 @@ export async function streamLiveDelegationToEncoder(
     context.memoryContext,
     context.delegation,
     context.liveGuide,
-    { transcriptOverride: context.transcript, skipStt: true, onProgress: emitStage },
+    {
+      transcriptOverride: context.transcript,
+      skipStt: true,
+      onProgress: emitStage,
+      explicitArtifactLanguage: context.explicitArtifactLanguage,
+      requestLanguage: context.requestLanguage,
+    },
   );
 
   const places = grounding.places;
@@ -169,6 +177,7 @@ export async function streamLiveDelegationToEncoder(
           stockImages,
           webCitations,
           customToolCalls,
+          artifactLanguage,
         }),
       ),
     );
@@ -192,6 +201,7 @@ export async function streamLiveDelegationToEncoder(
           stockImages,
           webCitations,
           customToolCalls,
+          artifactLanguage,
         }),
       ),
     );
@@ -249,6 +259,7 @@ export async function streamLiveDelegationToEncoder(
     timings,
     live_guide: liveGuide,
     guidance_mode: guidanceMode,
+    artifact_language: artifactLanguage,
   };
 
   enqueue(

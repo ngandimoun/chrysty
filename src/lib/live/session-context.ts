@@ -1,7 +1,7 @@
 import { fetchRecentTurns } from '@/lib/astra/db/conversation-history';
 import { fetchUserEcosystemActivity } from '@/lib/astra/ecosystem-activity';
 import { listBackgroundJobs } from '@/lib/background-jobs/db';
-import { isBackgroundJobsEnabled, resolveJobOrigin } from '@/lib/background-jobs/kickoff';
+import { isBackgroundJobsEnabled } from '@/lib/background-jobs/kickoff';
 import {
   buildBackgroundDelegationBlock,
   buildBackgroundJobsStatusBlock,
@@ -16,15 +16,22 @@ import type { LiveHistoryMessage, LiveSessionContextResponse, LiveSessionMode } 
 import { buildMemoriesBlock, buildRecentTurnsBlock } from '@/lib/mem0/prompt-block';
 import { searchUserMemories } from '@/lib/mem0/search';
 import type { MemoryContext } from '@/lib/mem0/types';
+import { buildLanguagePolicyBlock } from '@/lib/language/language-resolution';
 
 const LIVE_SYSTEM_RULES = `## Gemini Live voice rules
 You are Chrysty in a real-time voice session. Speak naturally and concisely.
 - Use fast custom tools for simple math, dates, units, weather, and device context.
 - Call delegateToStructuredLLM when the user needs web search, URL reading, code/charts, rich visual explanations, background research jobs, or anything you cannot do with fast tools alone.
+- Before expensive structured/background delegation, evolve the bounded draft objective with updateDraftObjective and use its model-driven readiness. Reflect or suggest naturally, ask at most one useful question, and delegate immediately when clear or when the user says proceed or "just do it".
+- Keep requested document changes, scheduled capabilities, timers, and checkpoints as intents in the objective envelope; never claim they were executed without an available execution tool.
 - Never mention delegateToStructuredLLM or internal tools to the user.
 - If delegateToStructuredLLM is running and the user adds detail, acknowledge briefly; do not restart delegation unless they change the task entirely.
 - For background work, speak only a short confirmation after delegation — do not attempt the full deliverable in voice.
 - In live_guide mode, use updateLiveGuideOverlay for spatial coaching on the camera frame.
+- Geographic precedence is strict: a place explicitly named by the user or established in the current conversation beats device coordinates. Use refreshed device coordinates only for genuine current-location intent such as "near me". Ask one concise clarification when location is required and ambiguous; otherwise proceed without optional location. Never invent a default city, and never discard a named place because GPS failed or was denied.
+- Camera evidence remains relevant when geography, weather, search, or delegation is also required. Analyze the visible scene and use the needed tool together; never suppress vision merely because a geographic/search tool is needed.
+- Use get_active_workspace_context before answering about the open document or selected passage. Request full content only when the bounded excerpt is insufficient.
+- Modify an open generated document only through the explicit document action tool after the user directly requests that mutation. Never infer a write from general discussion.
 - Continue naturally from prior context; do not re-introduce yourself unless the user asks who you are.`;
 
 export interface BuildLiveSessionContextInput {
@@ -74,6 +81,10 @@ export async function buildLiveSessionContext(
   const blocks: string[] = [
     `You are Chrysty, the voice companion for the Chrysty ecosystem.`,
     LIVE_SYSTEM_RULES,
+    buildLanguagePolicyBlock({
+      preferredLanguage: input.companion_profile?.preferredLanguage,
+      deviceLocale: input.user_context?.locale,
+    }),
   ];
 
   if (input.user_context) {
@@ -98,15 +109,29 @@ export async function buildLiveSessionContext(
     if (jobsBlock) blocks.push(jobsBlock);
   }
 
+  if (sessionState?.draft_objective) {
+    blocks.push(
+      `Continue this in-progress objective without restarting discovery:\n${JSON.stringify(sessionState.draft_objective)}`,
+    );
+  }
+
+  if (sessionState?.ui_context) {
+    blocks.push(
+      `Active workspace UI context (bounded; use the context tool for fresh/full data):\n${JSON.stringify(sessionState.ui_context)}`,
+    );
+  }
+
   const mode = input.mode ?? sessionState?.mode ?? 'default';
   let reconnectNote: string | null = null;
 
-  if (sessionState?.live_guide_state?.task?.name) {
+  if (mode === 'live_guide' && sessionState?.live_guide_state?.task?.name) {
     const task = sessionState.live_guide_state.task;
     reconnectNote = `You were coaching the user on "${task.name}"${task.stage ? ` at stage "${task.stage}"` : ''}. Continue from there naturally.`;
     blocks.push(
       `Live Guide is active. Task: ${task.name ?? 'unknown'}${task.stage ? `; stage: ${task.stage}` : ''}${task.progress ? `; progress: ${task.progress}` : ''}.`,
     );
+  } else if (mode === 'live_guide') {
+    blocks.push('Live Guide is active. Provide concise spatial coaching grounded in the camera frame.');
   } else if (recentTurns.length > 0) {
     reconnectNote = 'Continue the ongoing conversation naturally. Do not greet as if this is a brand-new session.';
   }

@@ -1,7 +1,14 @@
 import { createTool, type ToolAction } from '@mastra/core/tools';
 import { z } from 'zod';
 
-import { addGeneratedDocument, listGeneratedDocuments, listReferenceDocuments } from '@/lib/astra/db/documents';
+import {
+  addGeneratedDocument,
+  GeneratedDocumentConflictError,
+  getGeneratedDocumentBySourceKey,
+  listGeneratedDocuments,
+  listReferenceDocuments,
+  mutateGeneratedDocument,
+} from '@/lib/astra/db/documents';
 import { appendJobLog, getBackgroundJob, updateBackgroundJob } from '@/lib/background-jobs/db';
 import { MAX_CHART_ROWS } from '@/lib/charts/types';
 import type {
@@ -9,6 +16,14 @@ import type {
   GeneratedTextPayload,
 } from '@/lib/documents/generated-document-types';
 import { truncateTitle } from '@/lib/documents/generated-document-types';
+import { buildUpdatedTextPayload, getDocumentFullText } from '@/lib/documents/document-content';
+import {
+  buildLivingDocumentSource,
+  livingDocumentSourceKey,
+  objectiveRequestsMultipleDeliverables,
+  resolveLivingDeliverableKey,
+  upsertLivingDocumentSection,
+} from '@/lib/documents/living-document';
 import { getOpenWeatherApiKey } from '@/lib/gemini/config';
 import { evaluateExpression } from '@/lib/gemini/tools/calculator';
 import { fetchCurrentWeather } from '@/lib/gemini/weather';
@@ -27,6 +42,9 @@ export interface JobScope {
   workspaceId: string;
   astraKey: string;
   userId?: string;
+  objective: string;
+  jobTitle: string;
+  artifactLanguage: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -97,10 +115,10 @@ function createDocumentTool(scope: JobScope): JobTool {
   return createTool({
     id: 'createDocument',
     description:
-      'Saves a finished artifact into the user\'s Chrysty workspace so they can open it later. ' +
+      'Updates this objective\'s primary living document so the user can open the latest result later. ' +
       'Use kind "text" for reports, guides, tables, plans, flashcards, code walkthroughs — any rich markdown document. ' +
-      'Use kind "chart" for a standalone Recharts data visualization. ' +
-      'Call this once per finished artifact; each call creates one document in the workspace.',
+      'Each call idempotently replaces or appends a clearly named section; retries do not create duplicate sections. ' +
+      'Separate documents, including standalone charts, are allowed only when the user objective explicitly requests multiple deliverables.',
     inputSchema: z.object({
       title: z.string().describe('Clear document title shown in the workspace'),
       kind: z.enum(['text', 'chart']).describe('"text" = markdown document, "chart" = data chart'),
@@ -111,6 +129,10 @@ function createDocumentTool(scope: JobScope): JobTool {
           'Full document body for kind "text". GitHub-flavored markdown: headings, tables, task lists, ' +
             'code fences, inline math $x^2$, block math $$...$$, chemistry \\ce{H2O}.',
         ),
+      sectionName: z
+        .string()
+        .optional()
+        .describe('Stable, clearly named section to update in the living document; reuse it on retries.'),
       chart: chartSpecSchema.optional().describe('Chart spec for kind "chart"'),
       imageSearches: z
         .array(imageSearchSchema)
@@ -124,20 +146,39 @@ function createDocumentTool(scope: JobScope): JobTool {
     outputSchema: z.object({
       documentId: z.string(),
       title: z.string(),
+      revision: z.number(),
     }),
     execute: async (inputData) => {
-      const { title, kind, markdown, chart, imageSearches } = inputData as {
+      const { title, kind, markdown, chart, imageSearches, sectionName } = inputData as {
         title: string;
         kind: 'text' | 'chart';
         markdown?: string;
         chart?: z.infer<typeof chartSpecSchema>;
         imageSearches?: Array<z.infer<typeof imageSearchSchema>>;
+        sectionName?: string;
       };
 
       let jsonPayload: string;
       let docKind: string;
+      const explicitMultiple = objectiveRequestsMultipleDeliverables(scope.objective);
+      const deliverableKey = resolveLivingDeliverableKey({
+        objective: scope.objective,
+        title,
+        kind,
+      });
+      const sourceKey = livingDocumentSourceKey(scope.jobId, deliverableKey);
+      const sourceMetadata = buildLivingDocumentSource(
+        scope.jobId,
+        deliverableKey,
+        explicitMultiple,
+      );
 
       if (kind === 'chart') {
+        if (!explicitMultiple) {
+          throw new Error(
+            'This objective has one living document. Add the numeric findings as a markdown table or section instead of a standalone chart.',
+          );
+        }
         if (!chart) throw new Error('kind "chart" requires the chart field.');
         const payload: GeneratedChartPayload = {
           chart: {
@@ -168,14 +209,105 @@ function createDocumentTool(scope: JobScope): JobTool {
           }
         }
 
-        const payload: GeneratedTextPayload = {
-          fullText: markdown.trim(),
-          ...(stockImages.length > 0 ? { stockImages } : {}),
-        };
-        jsonPayload = JSON.stringify(payload);
-        docKind = 'text';
+        const sectionKey = explicitMultiple ? 'document' : sectionName?.trim() || title;
+        let existing = await getGeneratedDocumentBySourceKey(scope.astraKey, sourceKey);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (!existing) {
+            const fullText = upsertLivingDocumentSection({
+              currentMarkdown: '',
+              sectionKey,
+              sectionTitle: sectionName?.trim() || title,
+              markdown: markdown.trim(),
+            });
+            try {
+              const created = await addGeneratedDocument({
+                workspaceId: scope.workspaceId,
+                astraKey: scope.astraKey,
+                userId: scope.userId,
+                kind: 'text',
+                title: truncateTitle(explicitMultiple ? title : scope.jobTitle, 80),
+                jsonPayload: JSON.stringify({
+                  fullText,
+                  ...(stockImages.length > 0 ? { stockImages } : {}),
+                } satisfies GeneratedTextPayload),
+                jobId: scope.jobId,
+                sourceKey,
+                sourceMetadata,
+                auditMetadata: { created_by: 'background_objective', section_keys: [sectionKey] },
+                artifactLanguage: scope.artifactLanguage,
+              });
+              return { documentId: created.id, title: created.title, revision: created.revision };
+            } catch (error) {
+              existing = await getGeneratedDocumentBySourceKey(scope.astraKey, sourceKey);
+              if (!existing || attempt === 2) throw error;
+              continue;
+            }
+          }
+
+          if (existing.kind !== 'text') {
+            throw new Error('The living deliverable already exists with a non-text kind.');
+          }
+          const record = {
+            id: existing.id,
+            kind: 'text' as const,
+            title: existing.title,
+            createdAt: new Date(existing.created_at).getTime(),
+            updatedAt: new Date(existing.updated_at).getTime(),
+            jsonPayload: existing.json_payload ?? undefined,
+            revision: existing.revision,
+          };
+          const fullText = upsertLivingDocumentSection({
+            currentMarkdown: getDocumentFullText(record),
+            sectionKey,
+            sectionTitle: sectionName?.trim() || title,
+            markdown: markdown.trim(),
+          });
+          const payload = JSON.parse(
+            buildUpdatedTextPayload(record.jsonPayload, fullText),
+          ) as GeneratedTextPayload;
+          if (stockImages.length > 0) payload.stockImages = stockImages;
+
+          try {
+            const updated = await mutateGeneratedDocument({
+              astraKey: scope.astraKey,
+              documentId: existing.id,
+              expectedRevision: existing.revision,
+              action: 'update',
+              title: truncateTitle(explicitMultiple ? title : scope.jobTitle, 80),
+              jsonPayload: JSON.stringify(payload),
+              userId: scope.userId,
+              sessionId: `background-job:${scope.jobId}`,
+              metadata: {
+                source: 'background_objective',
+                job_id: scope.jobId,
+                deliverable_key: deliverableKey,
+                section_key: sectionKey,
+              },
+            });
+            return { documentId: updated.id, title: updated.title, revision: updated.revision };
+          } catch (error) {
+            if (!(error instanceof GeneratedDocumentConflictError) || attempt === 2) throw error;
+            existing = await getGeneratedDocumentBySourceKey(scope.astraKey, sourceKey);
+          }
+        }
+        throw new Error('Could not update living document after concurrent changes.');
       }
 
+      const existing = await getGeneratedDocumentBySourceKey(scope.astraKey, sourceKey);
+      if (existing) {
+        const updated = await mutateGeneratedDocument({
+          astraKey: scope.astraKey,
+          documentId: existing.id,
+          expectedRevision: existing.revision,
+          action: 'update',
+          title: truncateTitle(title, 80),
+          jsonPayload,
+          userId: scope.userId,
+          sessionId: `background-job:${scope.jobId}`,
+          metadata: { source: 'background_objective', deliverable_key: deliverableKey },
+        });
+        return { documentId: updated.id, title: updated.title, revision: updated.revision };
+      }
       const created = await addGeneratedDocument({
         workspaceId: scope.workspaceId,
         astraKey: scope.astraKey,
@@ -184,9 +316,12 @@ function createDocumentTool(scope: JobScope): JobTool {
         title: truncateTitle(title, 80),
         jsonPayload,
         jobId: scope.jobId,
+        sourceKey,
+        sourceMetadata,
+        auditMetadata: { created_by: 'background_objective' },
+        artifactLanguage: scope.artifactLanguage,
       });
-
-      return { documentId: created.id, title: created.title };
+      return { documentId: created.id, title: created.title, revision: created.revision };
     },
   });
 }

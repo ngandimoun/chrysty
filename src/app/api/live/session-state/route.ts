@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 
 import { requireLiveServiceAuth } from '@/lib/live/auth';
-import { patchLiveSession } from '@/lib/live/db';
-import type { LiveGuideSessionState, LiveSessionMode } from '@/lib/live/types';
+import { getLiveSession, patchLiveSessionForAstraKey } from '@/lib/live/db';
+import { compactDraftObjective } from '@/lib/live/objective';
+import type { DraftObjective, LiveGuideSessionState, LiveSessionMode } from '@/lib/live/types';
 
 export const runtime = 'nodejs';
 
@@ -12,20 +13,30 @@ export async function PATCH(request: Request) {
 
   const body = (await request.json()) as {
     session_id?: string;
+    astra_key?: string;
     mode?: LiveSessionMode;
     live_guide_state?: LiveGuideSessionState | null;
+    draft_objective?: DraftObjective | null;
     resumption_handle?: string | null;
     pending_turn_id?: string | null;
   };
 
   const sessionId = body.session_id?.trim();
-  if (!sessionId) {
-    return NextResponse.json({ error: 'session_id is required.' }, { status: 400 });
+  const astraKey = body.astra_key?.trim();
+  if (!sessionId || !astraKey) {
+    return NextResponse.json({ error: 'session_id and astra_key are required.' }, { status: 400 });
+  }
+  const session = await getLiveSession(sessionId);
+  if (!session || session.astra_key !== astraKey) {
+    return NextResponse.json({ error: 'Live session not found.' }, { status: 404 });
   }
 
-  await patchLiveSession(sessionId, {
+  await patchLiveSessionForAstraKey(sessionId, astraKey, {
     ...(body.mode ? { mode: body.mode } : {}),
     ...(body.live_guide_state !== undefined ? { live_guide_state: body.live_guide_state } : {}),
+    ...(body.draft_objective !== undefined
+      ? { draft_objective: compactDraftObjective(body.draft_objective) }
+      : {}),
     ...(body.resumption_handle !== undefined ? { resumption_handle: body.resumption_handle } : {}),
     ...(body.pending_turn_id !== undefined ? { pending_turn_id: body.pending_turn_id } : {}),
   });

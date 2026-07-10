@@ -283,6 +283,9 @@ function parsePhysicalTask(value: unknown): PhysicalTaskResponse | null {
 
 function parseVisuals(payload: Record<string, unknown>): ExplanationVisuals {
   return {
+    ...(typeof payload.artifactLanguage === 'string'
+      ? { artifactLanguage: payload.artifactLanguage }
+      : {}),
     places: parsePlaces(payload.places),
     charts: parseCharts(payload.charts),
     codeImages: parseCodeImages(payload.codeImages),

@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { Save, X } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 
 import { PhysicalTaskPanel } from '@/components/astra/physical-task-panel';
 import { PlaceCard } from '@/components/astra/place-card';
@@ -14,6 +14,10 @@ import type { ChartSpec, CodeExecutionImage } from '@/lib/charts/types';
 import type { PhysicalTaskResponse, VisualGuidanceResponse } from '@/lib/gemini/voice-response-schema';
 import type { GuidanceImage, PlaceCard as PlaceCardData, WebCitation } from '@/lib/streaming/types';
 import type { StockImageGroup } from '@/lib/visuals/stock-images';
+import {
+  createWorkspaceUiContext,
+  type WorkspaceUiContext,
+} from '@/lib/live/workspace-context';
 
 const ExplanationChart = dynamic(
   () => import('@/components/astra/explanation-chart').then((mod) => mod.ExplanationChart),
@@ -159,12 +163,14 @@ interface ExplanationCanvasProps {
   physicalTask?: PhysicalTaskResponse | null;
   visualGuidance?: VisualGuidanceResponse | null;
   userImages?: GuidanceImage[];
+  artifactLanguage?: string;
   active: boolean;
   durationMs?: number | null;
   onDismiss?: () => void;
   onSave?: () => void;
   saveDisabled?: boolean;
   isSaving?: boolean;
+  onWorkspaceContextChange?: (context: WorkspaceUiContext | null) => void;
 }
 
 export function ExplanationCanvas({
@@ -179,12 +185,14 @@ export function ExplanationCanvas({
   physicalTask = null,
   visualGuidance = null,
   userImages = [],
+  artifactLanguage,
   active,
   durationMs,
   onDismiss,
   onSave,
   saveDisabled = false,
   isSaving = false,
+  onWorkspaceContextChange,
 }: ExplanationCanvasProps) {
   const hasVisualExtras =
     charts.length > 0 ||
@@ -210,12 +218,14 @@ export function ExplanationCanvas({
       physicalTask={physicalTask}
       visualGuidance={visualGuidance}
       userImages={userImages}
+      artifactLanguage={artifactLanguage}
       active={active}
       durationMs={durationMs}
       onDismiss={onDismiss}
       onSave={onSave}
       saveDisabled={saveDisabled}
       isSaving={isSaving}
+      onWorkspaceContextChange={onWorkspaceContextChange}
       hasVisualExtras={hasVisualExtras}
     />
   );
@@ -233,18 +243,46 @@ function ExplanationCanvasBody({
   physicalTask = null,
   visualGuidance = null,
   userImages = [],
+  artifactLanguage,
   active,
   durationMs,
   onDismiss,
   onSave,
   saveDisabled = false,
   isSaving = false,
+  onWorkspaceContextChange,
   hasVisualExtras,
 }: ExplanationCanvasProps & { hasVisualExtras: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const deferVisualExtras = Boolean(fullText && hasVisualExtras);
   const [showVisualExtras, setShowVisualExtras] = useState(!deferVisualExtras);
   const saveLabel = isSaving ? 'Saving creations' : 'Save creations';
+
+  const publishContext = useCallback((selectedPassage = '') => {
+    onWorkspaceContextChange?.(createWorkspaceUiContext({
+      source: 'explanation_canvas',
+      title: 'Current explanation',
+      selectedPassage,
+      fullText,
+      saved: false,
+      artifactLanguage,
+    }));
+  }, [artifactLanguage, fullText, onWorkspaceContextChange]);
+
+  useEffect(() => {
+    publishContext();
+    return () => onWorkspaceContextChange?.(null);
+  }, [onWorkspaceContextChange, publishContext]);
+
+  const publishSelection = () => {
+    const selection = window.getSelection();
+    const node = selection?.anchorNode;
+    if (!selection || selection.isCollapsed || !node || !scrollRef.current?.contains(node)) {
+      publishContext();
+      return;
+    }
+    publishContext(selection.toString());
+  };
 
   const handleSummaryComplete = () => {
     if (hasVisualExtras) {
@@ -288,6 +326,8 @@ function ExplanationCanvasBody({
       ) : null}
       <div
         ref={scrollRef}
+        onMouseUp={publishSelection}
+        onKeyUp={publishSelection}
         className="w-full scroll-smooth
         min-h-[min(72vw,18rem)] max-h-[min(62vh,28rem)]
         sm:min-h-72 sm:max-h-128 md:min-h-80 md:max-h-144

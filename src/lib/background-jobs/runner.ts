@@ -1,7 +1,19 @@
 import { z } from 'zod';
 
-import { addGeneratedDocument } from '@/lib/astra/db/documents';
+import {
+  addGeneratedDocument,
+  getGeneratedDocument,
+  getGeneratedDocumentBySourceKey,
+  mutateGeneratedDocument,
+} from '@/lib/astra/db/documents';
+import { buildUpdatedTextPayload, getDocumentFullText } from '@/lib/documents/document-content';
 import { truncateTitle } from '@/lib/documents/generated-document-types';
+import {
+  buildLivingDocumentSource,
+  livingDocumentSourceKey,
+  objectiveRequestsMultipleDeliverables,
+  upsertLivingDocumentSection,
+} from '@/lib/documents/living-document';
 import { createManagerAgent, createSpecialistAgent } from '@/mastra/agents';
 import { buildJobToolbox, type JobScope, type JobToolbox } from '@/mastra/job-toolbox';
 
@@ -112,7 +124,7 @@ const FINAL_SCHEMA = z.object({
     .describe('2-4 conversational sentences summarizing what was accomplished, ready to be spoken aloud'),
   overviewMarkdown: z
     .string()
-    .describe('Workspace overview document in markdown: what was produced, key findings, how to use the artifacts'),
+    .describe('Final-summary section in markdown: what was produced, key findings, and suggested next steps'),
 });
 
 function progressStepsFromPlan(plan: JobPlan): JobProgressStep[] {
@@ -140,7 +152,9 @@ async function planJob(job: AstraBackgroundJobRow): Promise<AstraBackgroundJobRo
 
 """${job.objective}"""
 
-Design the execution plan for your specialist crew. Remember: dynamic roles, outcome-focused artifacts, fewer-but-deeper steps. Every producing step must instruct the specialist to save artifacts with createDocument. The last step must publish all deliverables to the workspace.`;
+Use BCP-47 language ${job.artifact_language || 'en'} for the plan, specialist instructions, artifacts, and final summary.
+
+Design the execution plan for your specialist crew. Remember: dynamic roles, fewer-but-deeper steps, and one primary living document by default. Every producing step must update a stable, clearly named section with createDocument. Only plan separate files when the objective above explicitly requests multiple deliverables. The last step must polish the same living document, not create a separate overview.`;
 
   const result = await manager.generate(prompt, {
     structuredOutput: { schema: PLAN_SCHEMA, jsonPromptInjection: true },
@@ -240,6 +254,9 @@ function buildStepPrompt(job: AstraBackgroundJobRow, stepIndex: number): string 
   return `## Delegated objective
 """${job.objective}"""
 
+## Required artifact language
+${job.artifact_language || 'en'} — use this language for saved content and handoff summaries.
+
 ## Crew plan (manager's approach: ${plan.approach})
 ${planOverview}
 
@@ -249,7 +266,7 @@ ${priorNotes}
 ## Your step: ${step.title}
 ${step.instructions}
 
-Work now. Use tools, report progress, save artifacts with createDocument, and end with your handoff summary.`;
+Work now. Use tools, report progress, update your clearly named section with createDocument, and end with your handoff summary. Reuse the same sectionName on retries.`;
 }
 
 async function runStep(
@@ -265,7 +282,8 @@ async function runStep(
   const timeoutMs = Math.max(30_000, budget.remaining() - 20_000);
   const abortSignal = AbortSignal.timeout(timeoutMs);
 
-  const docsBefore = (await listJobDocuments(scope.astraKey, scope.jobId)).length;
+  const docsBefore = await listJobDocuments(scope.astraKey, scope.jobId);
+  const revisionBefore = new Map(docsBefore.map((document) => [document.id, document.revision]));
 
   try {
     const result = await specialist.generate(buildStepPrompt(job, stepIndex), {
@@ -276,22 +294,27 @@ async function runStep(
 
     let summary = truncate(result.text || '(specialist produced no summary)', 4000);
 
-    const docsAfterFirst = (await listJobDocuments(scope.astraKey, scope.jobId)).length;
+    const docsAfterFirst = await listJobDocuments(scope.astraKey, scope.jobId);
+    const documentChanged =
+      docsAfterFirst.length !== docsBefore.length ||
+      docsAfterFirst.some(
+        (document) => (revisionBefore.get(document.id) ?? 0) !== document.revision,
+      );
     const expectsArtifact = stepExpectsArtifact(step.instructions);
 
-    if (expectsArtifact && docsAfterFirst === docsBefore && budget.remaining() > 45_000) {
+    if (expectsArtifact && !documentChanged && budget.remaining() > 45_000) {
       debugLog(`step ${step.id} produced no documents — running save nudge`);
       try {
         const nudgeSignal = AbortSignal.timeout(Math.max(30_000, budget.remaining() - 15_000));
         await specialist.generate(
           `Your previous reply is discarded. The user cannot see chat text — only createDocument saves artifacts.
 
-Save every deliverable for this step now using createDocument (kind "text" or "chart"). Use the content you already prepared.
+Save this step now by updating a stable, clearly named section of the living document with createDocument. Use the content you already prepared and reuse the same sectionName on retries.
 
 Step: ${step.title}
 ${step.instructions}
 
-After saving, reply with only a one-line confirmation listing document titles you created.`,
+After saving, reply with only a one-line confirmation naming the section you updated.`,
           {
             maxSteps: 8,
             abortSignal: nudgeSignal,
@@ -354,7 +377,7 @@ async function runSalvagePublisher(
 ## Specialist handoff notes (content may only exist here — not yet saved)
 ${notesBlock}
 
-You are the salvage publisher. No documents exist in the workspace yet. Compile the deliverables described above into polished createDocument calls (one per artifact). The user ONLY sees saved documents — save everything now.`,
+You are the salvage publisher. No documents exist in the workspace yet. Compile the useful work above into one polished primary living document with clearly named sections. Only use separate files if the delegated objective explicitly requires them. The user ONLY sees saved documents — save now.`,
       {
         maxSteps: 12,
         abortSignal: AbortSignal.timeout(Math.max(45_000, budget.remaining() - 20_000)),
@@ -388,7 +411,9 @@ ${notesBlock || '(none)'}
 ## Documents created in the workspace
 ${documentList}
 
-Write the final wrap-up: a short spoken summary for the user, and a workspace overview document that ties everything together (key findings, what each artifact contains, suggested next steps).`;
+Write both outputs in ${job.artifact_language || 'en'}.
+
+Write the final wrap-up: a short spoken summary for the user, and a concise final-summary section for the primary living document (key findings, what was produced, suggested next steps). Do not propose a separate overview file.`;
 
   let spokenSummary = `I finished working on: ${job.title}. Your workspace documents are ready.`;
   let overviewMarkdown = '';
@@ -407,17 +432,63 @@ Write the final wrap-up: a short spoken summary for the user, and a workspace ov
 
   if (overviewMarkdown.trim()) {
     try {
-      await addGeneratedDocument({
-        workspaceId: scope.workspaceId,
-        astraKey: scope.astraKey,
-        userId: scope.userId,
-        kind: 'text',
-        title: truncateTitle(`${job.title} — Overview`, 80),
-        jsonPayload: JSON.stringify({ fullText: overviewMarkdown.trim() }),
-        jobId: job.id,
-      });
+      const explicitMultiple = objectiveRequestsMultipleDeliverables(job.objective);
+      const primarySourceKey = livingDocumentSourceKey(job.id, 'primary');
+      let primary = await getGeneratedDocumentBySourceKey(job.astra_key, primarySourceKey);
+      if (!primary && explicitMultiple) {
+        const firstText = documents.find((document) => document.kind === 'text');
+        primary = firstText ? await getGeneratedDocument(job.astra_key, firstText.id) : null;
+      }
+
+      if (primary?.kind === 'text') {
+        const record = {
+          id: primary.id,
+          kind: 'text' as const,
+          title: primary.title,
+          createdAt: new Date(primary.created_at).getTime(),
+          updatedAt: new Date(primary.updated_at).getTime(),
+          jsonPayload: primary.json_payload ?? undefined,
+          revision: primary.revision,
+        };
+        const fullText = upsertLivingDocumentSection({
+          currentMarkdown: getDocumentFullText(record),
+          sectionKey: 'final-summary',
+          sectionTitle: 'Final Summary',
+          markdown: overviewMarkdown.trim(),
+        });
+        await mutateGeneratedDocument({
+          astraKey: scope.astraKey,
+          documentId: primary.id,
+          expectedRevision: primary.revision,
+          action: 'update',
+          jsonPayload: buildUpdatedTextPayload(record.jsonPayload, fullText),
+          userId: scope.userId,
+          sessionId: `background-job:${job.id}`,
+          metadata: { source: 'background_finalization', job_id: job.id, section_key: 'final-summary' },
+        });
+      } else if (!primary) {
+        const fullText = upsertLivingDocumentSection({
+          currentMarkdown: '',
+          sectionKey: 'final-summary',
+          sectionTitle: 'Final Summary',
+          markdown: overviewMarkdown.trim(),
+        });
+        await addGeneratedDocument({
+          workspaceId: scope.workspaceId,
+          astraKey: scope.astraKey,
+          userId: scope.userId,
+          kind: 'text',
+          title: truncateTitle(job.title, 80),
+          jsonPayload: JSON.stringify({ fullText }),
+          jobId: job.id,
+          sourceKey: primarySourceKey,
+          sourceMetadata: buildLivingDocumentSource(job.id, 'primary', explicitMultiple),
+          auditMetadata: { created_by: 'background_finalization' },
+          artifactLanguage: job.artifact_language || 'en',
+        });
+      }
     } catch (error) {
-      debugLog('overview document creation failed', error);
+      debugLog('living document finalization failed', error);
     }
   }
 
@@ -523,6 +594,9 @@ export async function runJobLeg(jobId: string): Promise<void> {
       workspaceId: job.workspace_id,
       astraKey: job.astra_key,
       userId: job.user_id ?? undefined,
+      objective: job.objective,
+      jobTitle: job.title,
+      artifactLanguage: job.artifact_language || 'en',
     };
 
     const toolbox = await buildJobToolbox(scope);
@@ -637,7 +711,7 @@ export async function runJobLeg(jobId: string): Promise<void> {
 
     job = await updateBackgroundJob(jobId, {
       progress: appendJobLog(
-        { ...job.progress, activity: 'Wrapping up — writing the workspace overview' },
+        { ...job.progress, activity: 'Wrapping up — updating the living document' },
         'Finalizing results',
       ),
       heartbeat_at: new Date().toISOString(),

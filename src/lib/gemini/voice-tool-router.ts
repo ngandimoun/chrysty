@@ -11,6 +11,7 @@ import {
   type VoiceToolSelection,
 } from '@/lib/gemini/tool-catalog';
 import type { UserContext } from '@/lib/gemini/user-context';
+import { normalizeBcp47 } from '@/lib/language/language-resolution';
 
 export type { VoiceToolSelection } from '@/lib/gemini/tool-catalog';
 export {
@@ -42,6 +43,10 @@ const TOOL_ROUTER_JSON_SCHEMA = {
       enum: ['voice', 'camera', 'canvas', 'document'],
     },
     requires_chart: { type: 'boolean' },
+    request_language: {
+      type: 'string',
+      description: 'Detected current request language as a BCP-47 code, or empty when uncertain',
+    },
     reasoning: { type: 'string' },
   },
   required: [
@@ -73,6 +78,7 @@ export interface VoiceRouteDecision {
   executionLane: VoiceExecutionLane;
   responseSurface: VoiceResponseSurface;
   requiresChart: boolean;
+  requestLanguage: string | null;
 }
 
 const DEFAULT_ROUTE_DECISION: VoiceRouteDecision = {
@@ -80,6 +86,7 @@ const DEFAULT_ROUTE_DECISION: VoiceRouteDecision = {
   executionLane: 'immediate',
   responseSurface: 'voice',
   requiresChart: false,
+  requestLanguage: null,
 };
 
 export interface VoiceToolRouteResult {
@@ -147,6 +154,7 @@ function parseRouterResponse(raw: string): {
         'voice',
       ),
       requiresChart: record.requires_chart === true,
+      requestLanguage: normalizeBcp47(record.request_language),
     },
     reasoning,
   };

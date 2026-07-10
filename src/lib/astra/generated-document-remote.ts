@@ -3,17 +3,58 @@
 import { astraFetch } from '@/lib/astra/api-client';
 import { listGeneratedDocuments as listLocalGeneratedDocuments } from '@/lib/documents/generated-document-store';
 import type { GeneratedDocumentKind, GeneratedDocumentRecord } from '@/lib/documents/generated-document-types';
+import type { DocumentMergePreview } from '@/lib/documents/living-document';
 
 export interface RemoteGeneratedDocumentMeta {
   id: string;
   kind: GeneratedDocumentKind;
   title: string;
   createdAt: number;
+  updatedAt: number;
   readAt?: number | null;
   mimeType?: string;
   jsonPayload?: string;
   hasBlob: boolean;
   jobId?: string;
+  revision: number;
+  sourceKey?: string | null;
+  sourceMetadata?: Record<string, unknown>;
+  auditMetadata?: Record<string, unknown>;
+  artifactLanguage: string;
+}
+
+export async function previewRemoteDocumentMerge(
+  documentIds: string[],
+): Promise<DocumentMergePreview> {
+  const response = await astraFetch('/api/astra/generated-documents', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'merge-preview', documentIds }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { preview?: DocumentMergePreview; error?: string }
+    | null;
+  if (!response.ok || !body?.preview) {
+    throw new Error(body?.error ?? 'Could not preview document merge');
+  }
+  return body.preview;
+}
+
+export async function confirmRemoteDocumentMerge(
+  preview: DocumentMergePreview,
+): Promise<RemoteGeneratedDocumentMeta> {
+  const response = await astraFetch('/api/astra/generated-documents', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'merge', confirmed: true, preview }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { document?: RemoteGeneratedDocumentMeta; error?: string }
+    | null;
+  if (!response.ok || !body?.document) {
+    throw new Error(body?.error ?? 'Could not merge documents');
+  }
+  return body.document;
 }
 
 export async function listRemoteGeneratedDocuments(): Promise<RemoteGeneratedDocumentMeta[]> {
@@ -34,6 +75,7 @@ export async function addRemoteGeneratedDocument(
   if (record.mimeType) formData.append('mimeType', record.mimeType);
   if (record.jsonPayload) formData.append('jsonPayload', record.jsonPayload);
   if (record.id) formData.append('id', record.id);
+  if (record.artifactLanguage) formData.append('artifactLanguage', record.artifactLanguage);
   if (record.blob) {
     formData.append('file', record.blob, record.title);
   }
@@ -63,7 +105,7 @@ export async function removeRemoteGeneratedDocument(id: string): Promise<void> {
 
 export async function updateRemoteGeneratedDocument(
   id: string,
-  patch: { title?: string; jsonPayload?: string },
+  patch: { title?: string; jsonPayload?: string; expectedRevision: number },
 ): Promise<RemoteGeneratedDocumentMeta> {
   const response = await astraFetch('/api/astra/generated-documents', {
     method: 'PATCH',
@@ -110,6 +152,7 @@ export async function fetchRemoteGeneratedRecord(id: string): Promise<GeneratedD
     const body = (await response.json()) as {
       mimeType?: string;
       jsonPayload?: string;
+      artifactLanguage?: string;
     };
     return {
       id,
@@ -118,6 +161,8 @@ export async function fetchRemoteGeneratedRecord(id: string): Promise<GeneratedD
       createdAt: Date.now(),
       mimeType: body.mimeType,
       jsonPayload: body.jsonPayload,
+      revision: 1,
+      artifactLanguage: body.artifactLanguage ?? 'en',
     };
   }
 
@@ -129,6 +174,8 @@ export async function fetchRemoteGeneratedRecord(id: string): Promise<GeneratedD
     createdAt: Date.now(),
     mimeType: blob.type || undefined,
     blob,
+    revision: 1,
+    artifactLanguage: 'en',
   };
 }
 

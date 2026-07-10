@@ -8,6 +8,7 @@ import type {
   JobWorkingState,
 } from './types';
 import { ACTIVE_JOB_STATUSES } from './types';
+import { normalizeBcp47 } from '@/lib/language/language-resolution';
 
 const TABLE = 'astra_background_jobs';
 const MAX_LOG_ENTRIES = 50;
@@ -19,6 +20,7 @@ export async function createBackgroundJob(params: {
   title: string;
   objective: string;
   origin: string;
+  artifactLanguage?: string;
 }): Promise<AstraBackgroundJobRow> {
   const { data, error } = await createUntypedAdminClient()
     .from(TABLE)
@@ -28,6 +30,7 @@ export async function createBackgroundJob(params: {
       user_id: params.userId ?? null,
       title: params.title,
       objective: params.objective,
+      artifact_language: normalizeBcp47(params.artifactLanguage) ?? 'en',
       status: 'queued',
       origin: params.origin,
       progress: { activity: 'Queued — waiting for a worker to pick this up', steps: [], log: [] },
@@ -169,14 +172,28 @@ export function isJobStalled(row: AstraBackgroundJobRow, staleAfterMs = 120_000)
 export async function listJobDocuments(
   astraKey: string,
   jobId: string,
-): Promise<Array<{ id: string; kind: string; title: string; created_at: string }>> {
+): Promise<Array<{
+  id: string;
+  kind: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  revision: number;
+}>> {
   const { data, error } = await createUntypedAdminClient()
     .from('astra_generated_documents')
-    .select('id, kind, title, created_at')
+    .select('id, kind, title, created_at, updated_at, revision')
     .eq('astra_key', astraKey)
     .eq('job_id', jobId)
-    .order('created_at', { ascending: true });
+    .order('updated_at', { ascending: true });
 
   if (error) throw new Error(error.message);
-  return (data ?? []) as Array<{ id: string; kind: string; title: string; created_at: string }>;
+  return (data ?? []) as Array<{
+    id: string;
+    kind: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+    revision: number;
+  }>;
 }

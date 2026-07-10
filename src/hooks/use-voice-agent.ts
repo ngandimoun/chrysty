@@ -361,6 +361,7 @@ export function useVoiceAgent({
             physicalTask: visuals.physicalTask,
             visualGuidance: visuals.visualGuidance,
             userImages,
+            artifactLanguage: visuals.artifactLanguage,
           });
         },
         onExplanationDelta: (text) => {
@@ -393,6 +394,7 @@ export function useVoiceAgent({
             physicalTask: visuals.physicalTask,
             visualGuidance: visuals.visualGuidance,
             userImages,
+            artifactLanguage: visuals.artifactLanguage,
           });
         },
         onLiveGuide: (update) => {

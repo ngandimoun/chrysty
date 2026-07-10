@@ -9,7 +9,10 @@ import type {
   LiveSessionMode,
   LiveSessionStateRecord,
   LiveGuideSessionState,
+  DraftObjective,
 } from '@/lib/live/types';
+import { compactDraftObjective } from '@/lib/live/objective';
+import { compactWorkspaceUiContext, type WorkspaceUiContext } from '@/lib/live/workspace-context';
 
 function rowToSession(row: Record<string, unknown>): LiveSessionStateRecord {
   return {
@@ -18,6 +21,8 @@ function rowToSession(row: Record<string, unknown>): LiveSessionStateRecord {
     astra_key: String(row.astra_key),
     mode: (row.mode === 'live_guide' ? 'live_guide' : 'default') as LiveSessionMode,
     live_guide_state: (row.live_guide_state as LiveGuideSessionState | null) ?? null,
+    draft_objective: compactDraftObjective(row.draft_objective),
+    ui_context: compactWorkspaceUiContext(row.ui_context),
     resumption_handle: row.resumption_handle ? String(row.resumption_handle) : null,
     pending_turn_id: row.pending_turn_id ? String(row.pending_turn_id) : null,
     updated_at: String(row.updated_at),
@@ -45,6 +50,8 @@ export async function upsertLiveSession(input: {
   astra_key: string;
   mode?: LiveSessionMode;
   live_guide_state?: LiveGuideSessionState | null;
+  draft_objective?: DraftObjective | null;
+  ui_context?: WorkspaceUiContext | null;
   resumption_handle?: string | null;
   pending_turn_id?: string | null;
 }): Promise<LiveSessionStateRecord | null> {
@@ -58,6 +65,10 @@ export async function upsertLiveSession(input: {
           astra_key: input.astra_key,
           mode: input.mode ?? 'default',
           live_guide_state: input.live_guide_state ?? null,
+          ...(input.draft_objective !== undefined
+            ? { draft_objective: input.draft_objective }
+            : {}),
+          ...(input.ui_context !== undefined ? { ui_context: input.ui_context } : {}),
           resumption_handle: input.resumption_handle ?? null,
           pending_turn_id: input.pending_turn_id ?? null,
           updated_at: new Date().toISOString(),
@@ -79,6 +90,8 @@ export async function patchLiveSession(
   patch: Partial<{
     mode: LiveSessionMode;
     live_guide_state: LiveGuideSessionState | null;
+    draft_objective: DraftObjective | null;
+    ui_context: WorkspaceUiContext | null;
     resumption_handle: string | null;
     pending_turn_id: string | null;
   }>,
@@ -91,6 +104,29 @@ export async function patchLiveSession(
   } catch (error) {
     console.error('[live-sessions] patch failed', error);
   }
+}
+
+export async function patchLiveSessionForAstraKey(
+  sessionId: string,
+  astraKey: string,
+  patch: Partial<{
+    mode: LiveSessionMode;
+    live_guide_state: LiveGuideSessionState | null;
+    draft_objective: DraftObjective | null;
+    ui_context: WorkspaceUiContext | null;
+    resumption_handle: string | null;
+    pending_turn_id: string | null;
+  }>,
+): Promise<boolean> {
+  const { data, error } = await createUntypedAdminClient()
+    .from('astra_live_sessions')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('session_id', sessionId)
+    .eq('astra_key', astraKey)
+    .select('session_id')
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return Boolean(data);
 }
 
 function rowToDelegation(row: Record<string, unknown>): LiveDelegationRecord {

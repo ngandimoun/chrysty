@@ -9,6 +9,13 @@ function rowToProfile(row: AstraCompanionProfileRow | null): CompanionProfile {
   return normalizeCompanionProfile({
     preferredName: row.preferred_name ?? undefined,
     occupation: row.occupation ?? undefined,
+    preferredLanguage:
+      row.preferred_language_code
+        ? {
+            code: row.preferred_language_code,
+            label: row.preferred_language_label ?? row.preferred_language_code,
+          }
+        : undefined,
     foodPreferences: row.food_preferences ?? undefined,
     healthNotes: row.health_notes ?? undefined,
     interests: row.interests ?? undefined,
@@ -30,6 +37,8 @@ function profileToRow(
     user_id: userId ?? null,
     preferred_name: normalized.preferredName ?? null,
     occupation: normalized.occupation ?? null,
+    preferred_language_code: normalized.preferredLanguage?.code ?? null,
+    preferred_language_label: normalized.preferredLanguage?.label ?? null,
     food_preferences: normalized.foodPreferences ?? null,
     health_notes: normalized.healthNotes ?? null,
     interests: normalized.interests ?? null,

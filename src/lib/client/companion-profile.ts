@@ -1,3 +1,8 @@
+import {
+  normalizeLanguagePreference,
+  type LanguagePreference,
+} from '@/lib/language/language-resolution';
+
 export interface InteractionPreferences {
   responseDepth?: string;
   tones?: string[];
@@ -13,6 +18,7 @@ export interface InteractionPreferences {
 export interface CompanionProfile {
   preferredName?: string;
   occupation?: string;
+  preferredLanguage?: LanguagePreference;
   foodPreferences?: string;
   healthNotes?: string;
   interests?: string;
@@ -129,6 +135,11 @@ export function normalizeCompanionProfile(profile: CompanionProfile): CompanionP
     }
   }
 
+  const preferredLanguage = normalizeLanguagePreference(profile.preferredLanguage);
+  if (preferredLanguage) {
+    normalized.preferredLanguage = preferredLanguage;
+  }
+
   const interactionPreferences = normalizeInteractionPreferences(profile.interactionPreferences);
   if (interactionPreferences) {
     normalized.interactionPreferences = interactionPreferences;
@@ -140,6 +151,7 @@ export function normalizeCompanionProfile(profile: CompanionProfile): CompanionP
 export function hasCompanionProfile(profile: CompanionProfile): boolean {
   return (
     PROFILE_FIELDS.some((field) => Boolean(trimField(profile[field]))) ||
+    Boolean(normalizeLanguagePreference(profile.preferredLanguage)) ||
     Boolean(normalizeInteractionPreferences(profile.interactionPreferences))
   );
 }

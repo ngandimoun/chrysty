@@ -3,8 +3,8 @@
 import { encodeCanvasAsJpeg } from '@/lib/camera/encode';
 import type { FocusAnnotation } from '@/lib/camera/types';
 
-const MIN_STROKE_PX = 3;
-const MAX_STROKE_PX = 10;
+const MIN_STROKE_PX = 2;
+const MAX_STROKE_PX = 6;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -35,7 +35,7 @@ export function sanitizeFocusAnnotations(annotations: FocusAnnotation[]): FocusA
 }
 
 function getStrokeWidth(width: number, height: number): number {
-  return clamp(Math.round(Math.min(width, height) * 0.012), MIN_STROKE_PX, MAX_STROKE_PX);
+  return clamp(Math.min(width, height) * 0.006, MIN_STROKE_PX, MAX_STROKE_PX);
 }
 
 function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
@@ -78,16 +78,21 @@ function drawCircleAnnotation(
   const centerY = box.y + box.height / 2;
 
   ctx.save();
-  ctx.lineWidth = strokeWidth + 4;
-  ctx.strokeStyle = 'rgba(8, 15, 30, 0.7)';
+  ctx.fillStyle = 'rgba(125, 211, 252, 0.055)';
+  ctx.beginPath();
+  ctx.ellipse(centerX, centerY, box.width / 2, box.height / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.lineWidth = strokeWidth + 2.5;
+  ctx.strokeStyle = 'rgba(8, 15, 30, 0.66)';
   ctx.beginPath();
   ctx.ellipse(centerX, centerY, box.width / 2, box.height / 2, 0, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.lineWidth = strokeWidth;
   ctx.strokeStyle = '#7dd3fc';
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.55)';
-  ctx.shadowBlur = strokeWidth * 2;
+  ctx.shadowColor = 'rgba(125, 211, 252, 0.35)';
+  ctx.shadowBlur = strokeWidth;
   ctx.beginPath();
   ctx.ellipse(centerX, centerY, box.width / 2, box.height / 2, 0, 0, Math.PI * 2);
   ctx.stroke();
@@ -104,14 +109,17 @@ function drawRectAnnotation(
   const strokeWidth = getStrokeWidth(width, height);
 
   ctx.save();
-  ctx.lineWidth = strokeWidth + 4;
-  ctx.strokeStyle = 'rgba(8, 15, 30, 0.7)';
+  ctx.fillStyle = 'rgba(125, 211, 252, 0.045)';
+  ctx.fillRect(box.x, box.y, box.width, box.height);
+
+  ctx.lineWidth = strokeWidth + 2.5;
+  ctx.strokeStyle = 'rgba(8, 15, 30, 0.66)';
   ctx.strokeRect(box.x, box.y, box.width, box.height);
 
   ctx.lineWidth = strokeWidth;
   ctx.strokeStyle = '#7dd3fc';
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.55)';
-  ctx.shadowBlur = strokeWidth * 2;
+  ctx.shadowColor = 'rgba(125, 211, 252, 0.35)';
+  ctx.shadowBlur = strokeWidth;
   ctx.strokeRect(box.x, box.y, box.width, box.height);
   ctx.restore();
 }
@@ -126,13 +134,13 @@ function drawHighlightAnnotation(
   const strokeWidth = getStrokeWidth(width, height);
 
   ctx.save();
-  ctx.fillStyle = 'rgba(253, 224, 71, 0.22)';
+  ctx.fillStyle = 'rgba(253, 224, 71, 0.15)';
   ctx.fillRect(box.x, box.y, box.width, box.height);
 
   ctx.lineWidth = strokeWidth;
   ctx.strokeStyle = 'rgba(250, 204, 21, 0.95)';
-  ctx.shadowColor = 'rgba(250, 204, 21, 0.35)';
-  ctx.shadowBlur = strokeWidth * 1.5;
+  ctx.shadowColor = 'rgba(250, 204, 21, 0.22)';
+  ctx.shadowBlur = strokeWidth;
   ctx.strokeRect(box.x, box.y, box.width, box.height);
   ctx.restore();
 }
@@ -149,13 +157,13 @@ function drawArrowAnnotation(
   const endX = (annotation.endX ?? annotation.x + annotation.width) * width;
   const endY = (annotation.endY ?? annotation.y + annotation.height) * height;
   const angle = Math.atan2(endY - startY, endX - startX);
-  const headLength = Math.max(strokeWidth * 4, Math.min(width, height) * 0.045);
+  const headLength = clamp(Math.min(width, height) * 0.03, 10, 26);
   const headAngle = Math.PI / 7;
 
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = strokeWidth + 4;
+  ctx.lineWidth = strokeWidth + 2.5;
   ctx.strokeStyle = 'rgba(8, 15, 30, 0.72)';
   ctx.beginPath();
   ctx.moveTo(startX, startY);
@@ -167,8 +175,8 @@ function drawArrowAnnotation(
 
   ctx.lineWidth = strokeWidth;
   ctx.strokeStyle = '#7dd3fc';
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.55)';
-  ctx.shadowBlur = strokeWidth * 2;
+  ctx.shadowColor = 'rgba(125, 211, 252, 0.35)';
+  ctx.shadowBlur = strokeWidth;
   ctx.beginPath();
   ctx.moveTo(startX, startY);
   ctx.lineTo(endX, endY);
@@ -188,29 +196,29 @@ function drawPointerAnnotation(
   const strokeWidth = getStrokeWidth(width, height);
   const centerX = (annotation.endX ?? annotation.x + annotation.width / 2) * width;
   const centerY = (annotation.endY ?? annotation.y + annotation.height / 2) * height;
-  const radius = Math.max(strokeWidth * 2.2, Math.min(width, height) * 0.025);
-  const tailLength = radius * 1.35;
+  const radius = clamp(Math.min(width, height) * 0.012, 5, 13);
+  const tailLength = radius * 0.9;
 
   ctx.save();
   ctx.fillStyle = 'rgba(8, 15, 30, 0.82)';
   ctx.strokeStyle = 'rgba(8, 15, 30, 0.78)';
-  ctx.lineWidth = strokeWidth;
+  ctx.lineWidth = Math.max(1, strokeWidth * 0.7);
   ctx.beginPath();
   ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 
   ctx.fillStyle = '#7dd3fc';
-  ctx.shadowColor = 'rgba(125, 211, 252, 0.55)';
-  ctx.shadowBlur = strokeWidth * 1.5;
+  ctx.shadowColor = 'rgba(125, 211, 252, 0.32)';
+  ctx.shadowBlur = strokeWidth;
   ctx.beginPath();
-  ctx.arc(centerX, centerY, radius * 0.52, 0, Math.PI * 2);
+  ctx.arc(centerX, centerY, radius * 0.5, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.beginPath();
-  ctx.moveTo(centerX, centerY + radius);
-  ctx.lineTo(centerX - radius * 0.45, centerY + radius + tailLength);
-  ctx.lineTo(centerX + radius * 0.45, centerY + radius + tailLength);
+  ctx.moveTo(centerX, centerY + radius * 0.75);
+  ctx.lineTo(centerX - radius * 0.38, centerY + radius + tailLength);
+  ctx.lineTo(centerX + radius * 0.38, centerY + radius + tailLength);
   ctx.closePath();
   ctx.fill();
   ctx.restore();

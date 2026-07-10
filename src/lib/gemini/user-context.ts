@@ -12,6 +12,8 @@ export interface UserContext {
   localTimeLabel: string;
   localDateTimeLabel: string;
   coordinates?: UserCoordinates;
+  geolocationStatus?: 'granted' | 'denied' | 'timeout' | 'unavailable';
+  geolocationTimestamp?: string;
 }
 
 export interface UserContextFormFields {
@@ -21,6 +23,8 @@ export interface UserContextFormFields {
   userLatitude?: string;
   userLongitude?: string;
   geoAccuracyMeters?: string;
+  geolocationStatus?: UserContext['geolocationStatus'];
+  geolocationTimestamp?: string;
 }
 
 const DEFAULT_TIMEZONE = 'UTC';
@@ -93,6 +97,15 @@ export function buildUserContext(fields: UserContextFormFields): UserContext {
           ...(accuracyMeters !== undefined ? { accuracyMeters } : {}),
         }
       : undefined;
+  const geolocationStatus = ['granted', 'denied', 'timeout', 'unavailable'].includes(
+    fields.geolocationStatus ?? '',
+  )
+    ? fields.geolocationStatus
+    : undefined;
+  const geolocationTimestamp =
+    fields.geolocationTimestamp && Number.isFinite(Date.parse(fields.geolocationTimestamp))
+      ? new Date(fields.geolocationTimestamp).toISOString()
+      : undefined;
 
   return {
     timezone: safeTimezone,
@@ -100,6 +113,8 @@ export function buildUserContext(fields: UserContextFormFields): UserContext {
     clientTimestamp: instant.toISOString(),
     ...labels,
     ...(coordinates ? { coordinates } : {}),
+    ...(geolocationStatus ? { geolocationStatus } : {}),
+    ...(geolocationTimestamp ? { geolocationTimestamp } : {}),
   };
 }
 
@@ -111,6 +126,10 @@ export function parseUserContextFromFormData(formData: FormData): UserContext {
     userLatitude: String(formData.get('userLatitude') ?? ''),
     userLongitude: String(formData.get('userLongitude') ?? ''),
     geoAccuracyMeters: String(formData.get('geoAccuracyMeters') ?? ''),
+    geolocationStatus:
+      (String(formData.get('geolocationStatus') ?? '') as UserContext['geolocationStatus']) ||
+      undefined,
+    geolocationTimestamp: String(formData.get('geolocationTimestamp') ?? ''),
   });
 }
 
@@ -127,6 +146,8 @@ export function buildUserTemporalContextBlock(userContext: UserContext): string 
     const accuracy =
       accuracyMeters !== undefined ? `, accuracy ~${Math.round(accuracyMeters)}m` : '';
     lines.push(`- Coordinates: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}${accuracy}`);
+  } else if (userContext.geolocationStatus) {
+    lines.push(`- Device location: ${userContext.geolocationStatus} (no coordinates available)`);
   }
 
   lines.push('- Treat the local date/time above as "now" and "today" for the user.');
@@ -135,7 +156,7 @@ export function buildUserTemporalContextBlock(userContext: UserContext): string 
 }
 
 const CONTEXT_ALIGNMENT =
-  "Use the user's local date/time and coordinates from context; do not invent a different location or timezone.";
+  "Location precedence: use an explicit place named by the user or established in the current conversation first. Use device coordinates only for genuine current-location intent such as “near me”. If a required location remains ambiguous, ask one concise clarification; if location is optional, proceed without it. Never invent or select a default city, and never discard a named place because device location is unavailable.";
 
 export function buildGoogleSearchToolBlock(): string {
   return [
@@ -186,6 +207,7 @@ export function buildGoogleMapsToolBlock(): string {
     '- Questions you can answer without place data',
     '',
     'Maps vs Search: Maps = places and locations. Search = live facts, news, weather, events, prices.',
+    '- Camera evidence remains available when Maps is used. Use both when the request needs visible-scene evidence plus geographic results; never suppress image analysis merely because location data or search is also required.',
     'Maps grounding works best in English — keep place names and categories in English in explanation_text, but keep spoken_transcript in the user\'s language.',
     'When Maps informs your answer: set needs_visual_explanation true and keep explanation_text as a brief intro that states the recommendation; full place cards follow separately — do not duplicate long place lists in explanation_text.',
   ].join('\n');
@@ -277,7 +299,7 @@ export function buildCustomToolsBlock(): string {
     'getWeather (when available):',
     '- Returns current weather for a location or coordinates.',
     '- Use when the user asks about weather and precise conditions are needed.',
-    '- Often combine with Search: Search finds the place, then getWeather fetches conditions.',
+    '- Pass a named location whenever the user or current conversation provides one. Set use_current_location=true only for genuine current-location wording. Never make up a city.',
     '',
     'Voice-first rules:',
     '- Keep voice concise; state the computed result or main finding aloud; put lists, tables, and conversions in explanation_text.',

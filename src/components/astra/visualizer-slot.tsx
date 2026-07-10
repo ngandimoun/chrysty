@@ -11,6 +11,7 @@ import type { CameraAspectRatio, CameraFacing, FocusAnnotation } from '@/lib/cam
 import type { NumericRange } from '@/lib/camera/track-controls';
 import type { GeneratedDocumentItem } from '@/hooks/use-generated-documents';
 import type { ExplanationState } from '@/lib/streaming/types';
+import type { WorkspaceUiContext } from '@/lib/live/workspace-context';
 
 const AuraVisualizer = dynamic(
   () => import('@/components/astra/aura-visualizer').then((mod) => mod.AuraVisualizer),
@@ -47,6 +48,7 @@ interface VisualizerSlotProps {
   onSaveExplanation?: () => void;
   saveExplanationDisabled?: boolean;
   isSavingExplanation?: boolean;
+  onWorkspaceContextChange?: (context: WorkspaceUiContext | null) => void;
   pendingPhotoCount?: number;
   canFlipCamera?: boolean;
   canUseTorch?: boolean;
@@ -91,6 +93,7 @@ export function VisualizerSlot({
   onSaveExplanation,
   saveExplanationDisabled,
   isSavingExplanation = false,
+  onWorkspaceContextChange,
   pendingPhotoCount,
   canFlipCamera,
   canUseTorch,
@@ -148,6 +151,7 @@ export function VisualizerSlot({
               onDismiss={() => onDismissDocument?.()}
               onUpdate={onUpdateDocument}
               onCopy={onCopyDocument}
+              onWorkspaceContextChange={onWorkspaceContextChange}
             />
           </motion.div>
         ) : showExplanation ? (
@@ -171,12 +175,14 @@ export function VisualizerSlot({
               physicalTask={explanation.physicalTask}
               visualGuidance={explanation.visualGuidance}
               userImages={explanation.userImages}
+              artifactLanguage={explanation.artifactLanguage}
               active={showExplanation}
               durationMs={speakingDurationMs}
               onDismiss={onDismissExplanation}
               onSave={onSaveExplanation}
               saveDisabled={saveExplanationDisabled}
               isSaving={isSavingExplanation}
+              onWorkspaceContextChange={onWorkspaceContextChange}
             />
           </motion.div>
         ) : showCamera ? (

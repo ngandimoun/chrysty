@@ -3,12 +3,14 @@ import { NextResponse } from 'next/server';
 import { listBackgroundJobs } from '@/lib/background-jobs/db';
 import { isBackgroundJobsEnabled, resolveJobOrigin } from '@/lib/background-jobs/kickoff';
 import { summarizeJobsForPrompt } from '@/lib/gemini/background-delegation';
-import { createLiveDelegation, patchLiveSession } from '@/lib/live/db';
+import { createLiveDelegation, getLiveSession, patchLiveSession } from '@/lib/live/db';
 import { requireLiveServiceAuth } from '@/lib/live/auth';
 import { resolveLiveAstraIdentity } from '@/lib/live/identity';
+import { compactObjectiveEnvelope } from '@/lib/live/objective';
 import type { LiveDelegateRequest } from '@/lib/live/types';
 import { createTurnId } from '@/lib/live/types';
 import { isSupabaseConfigured } from '@/lib/supabase/admin';
+import { normalizeBcp47 } from '@/lib/language/language-resolution';
 
 export const runtime = 'nodejs';
 
@@ -38,6 +40,14 @@ export async function POST(request: Request) {
 
   const identity = await resolveLiveAstraIdentity(request, astraKey);
   if (identity instanceof NextResponse) return identity;
+  const session = await getLiveSession(sessionId);
+  if (
+    !session ||
+    session.astra_key !== identity.astraKey ||
+    session.workspace_id !== identity.workspaceId
+  ) {
+    return NextResponse.json({ error: 'Live session not found.' }, { status: 404 });
+  }
 
   const turnId = body.turn_id?.trim() || createTurnId();
   const delegateRequest: LiveDelegateRequest = {
@@ -46,9 +56,11 @@ export async function POST(request: Request) {
     transcript,
     user_intent: body.user_intent?.trim(),
     visual_context: body.visual_context?.trim(),
+    objective_envelope: compactObjectiveEnvelope(body.objective_envelope),
     mode: body.mode === 'live_guide' ? 'live_guide' : 'default',
     user_context: body.user_context,
     companion_profile: body.companion_profile,
+    request_language: normalizeBcp47(body.request_language),
     images: body.images,
   };
 
@@ -99,6 +111,14 @@ export async function GET(request: Request) {
 
   const identity = await resolveLiveAstraIdentity(request, astraKey);
   if (identity instanceof NextResponse) return identity;
+  const session = await getLiveSession(sessionId);
+  if (
+    !session ||
+    session.astra_key !== identity.astraKey ||
+    session.workspace_id !== identity.workspaceId
+  ) {
+    return NextResponse.json({ error: 'Live session not found.' }, { status: 404 });
+  }
 
   const jobs = isBackgroundJobsEnabled()
     ? await listBackgroundJobs(identity.astraKey, 8).catch(() => [])

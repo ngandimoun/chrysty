@@ -46,6 +46,7 @@ export interface GuidanceImage {
 }
 
 export interface ExplanationVisuals {
+  artifactLanguage?: string;
   places: PlaceCard[];
   charts: ChartSpec[];
   codeImages: CodeExecutionImage[];
@@ -69,6 +70,7 @@ export interface ExplanationState {
   physicalTask: PhysicalTaskResponse | null;
   visualGuidance: VisualGuidanceResponse | null;
   userImages: GuidanceImage[];
+  artifactLanguage?: string;
 }
 
 export const EMPTY_EXPLANATION: ExplanationState = {

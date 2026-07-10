@@ -3,6 +3,8 @@ import type { ResponseTimings } from '@/lib/gemini/config';
 import type { LiveGuideResponse } from '@/lib/gemini/voice-response-schema';
 import type { UserContext } from '@/lib/gemini/user-context';
 import type { ExplanationVisuals } from '@/lib/streaming/types';
+import type { CaptureMode, FocusAnnotation } from '@/lib/camera/types';
+import type { WorkspaceUiContext } from '@/lib/live/workspace-context';
 
 export type LiveSessionMode = 'default' | 'live_guide';
 
@@ -15,12 +17,54 @@ export interface LiveGuideSessionState {
   watch_me_enabled?: boolean;
 }
 
+export type ObjectiveReadiness = 'ready' | 'needs_clarification' | 'suggest_enrichment';
+
+export interface ObjectiveEvidence {
+  id: string;
+  kind: string;
+  excerpt: string;
+}
+
+export interface DraftObjective {
+  objective: string;
+  constraints: string[];
+  evidence: ObjectiveEvidence[];
+  artifact_language: string;
+  deliverable: string;
+  open_question: string | null;
+  success_criteria: string[];
+  requested_intents: string[];
+  document_action: DocumentActionIntent | null;
+  readiness: ObjectiveReadiness;
+}
+
+export interface DocumentActionIntent {
+  action: 'update' | 'append' | 'rename';
+  document_id: string;
+  expected_revision: number;
+  explicit_user_intent: true;
+}
+
+export interface ObjectiveEnvelope {
+  version: 1;
+  finalized_objective: string;
+  evidence: ObjectiveEvidence[];
+  constraints: string[];
+  language: { resolved: string | null; requested: string };
+  deliverable: string;
+  success_criteria: string[];
+  requested_intents: string[];
+  document_action: DocumentActionIntent | null;
+}
+
 export interface LiveSessionStateRecord {
   session_id: string;
   workspace_id: string | null;
   astra_key: string;
   mode: LiveSessionMode;
   live_guide_state: LiveGuideSessionState | null;
+  draft_objective: DraftObjective | null;
+  ui_context: WorkspaceUiContext | null;
   resumption_handle: string | null;
   pending_turn_id: string | null;
   updated_at: string;
@@ -45,15 +89,19 @@ export interface LiveDelegateRequest {
   transcript: string;
   user_intent?: string;
   visual_context?: string;
+  objective_envelope?: ObjectiveEnvelope;
   mode?: LiveSessionMode;
   user_context?: UserContext;
   companion_profile?: CompanionProfile;
+  request_language?: string | null;
   images?: Array<{
     image_id?: string;
     mime_type: string;
     data_base64: string;
     width?: number;
     height?: number;
+    capture_mode?: CaptureMode;
+    focus_annotations?: FocusAnnotation[];
   }>;
 }
 
@@ -81,6 +129,7 @@ export interface LiveDelegationResult {
   show_explanation: boolean;
   visuals: ExplanationVisuals;
   spoken_summary: string;
+  artifact_language: string;
   timings: ResponseTimings;
   live_guide?: LiveGuideResponse | null;
   guidance_mode?: string;

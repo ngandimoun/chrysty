@@ -7,6 +7,14 @@ interface GeolocationPosition {
   latitude: number;
   longitude: number;
   accuracyMeters: number;
+  timestamp: number;
+}
+
+type GeolocationStatus = 'granted' | 'denied' | 'timeout' | 'unavailable';
+
+interface GeolocationResult {
+  position: GeolocationPosition | null;
+  status: GeolocationStatus;
 }
 
 function readBrowserTimezone(): string {
@@ -17,26 +25,41 @@ function readBrowserTimezone(): string {
   }
 }
 
-function requestGeolocation(): Promise<GeolocationPosition | null> {
+function requestGeolocation(): Promise<GeolocationResult> {
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
-    return Promise.resolve(null);
+    return Promise.resolve({ position: null, status: 'unavailable' });
   }
 
   return new Promise((resolve) => {
-    const timeoutId = window.setTimeout(() => resolve(null), GEOLOCATION_TIMEOUT_MS);
+    let settled = false;
+    const finish = (result: GeolocationResult) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      resolve(result);
+    };
+    const timeoutId = window.setTimeout(
+      () => finish({ position: null, status: 'timeout' }),
+      GEOLOCATION_TIMEOUT_MS,
+    );
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        window.clearTimeout(timeoutId);
-        resolve({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracyMeters: position.coords.accuracy,
+        finish({
+          status: 'granted',
+          position: {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracyMeters: position.coords.accuracy,
+            timestamp: position.timestamp,
+          },
         });
       },
-      () => {
-        window.clearTimeout(timeoutId);
-        resolve(null);
+      (error) => {
+        finish({
+          position: null,
+          status: error.code === error.PERMISSION_DENIED ? 'denied' : 'unavailable',
+        });
       },
       {
         enableHighAccuracy: false,
@@ -54,11 +77,14 @@ export async function collectUserContextForRequest(): Promise<UserContextFormFie
     clientTimestamp: new Date().toISOString(),
   };
 
-  const position = await requestGeolocation();
-  if (position) {
+  const geolocation = await requestGeolocation();
+  fields.geolocationStatus = geolocation.status;
+  if (geolocation.position) {
+    const position = geolocation.position;
     fields.userLatitude = String(position.latitude);
     fields.userLongitude = String(position.longitude);
     fields.geoAccuracyMeters = String(position.accuracyMeters);
+    fields.geolocationTimestamp = new Date(position.timestamp).toISOString();
   }
 
   return fields;
@@ -71,6 +97,7 @@ export function appendUserContextToFormData(
   formData.append('userTimezone', fields.userTimezone);
   formData.append('userLocale', fields.userLocale);
   formData.append('clientTimestamp', fields.clientTimestamp);
+  formData.append('geolocationStatus', fields.geolocationStatus ?? 'unavailable');
 
   if (fields.userLatitude !== undefined) {
     formData.append('userLatitude', fields.userLatitude);
@@ -80,5 +107,8 @@ export function appendUserContextToFormData(
   }
   if (fields.geoAccuracyMeters !== undefined) {
     formData.append('geoAccuracyMeters', fields.geoAccuracyMeters);
+  }
+  if (fields.geolocationTimestamp !== undefined) {
+    formData.append('geolocationTimestamp', fields.geolocationTimestamp);
   }
 }

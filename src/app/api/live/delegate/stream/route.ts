@@ -18,6 +18,7 @@ import {
   updateLiveDelegationRequest,
 } from '@/lib/live/db';
 import { streamLiveDelegationToEncoder } from '@/lib/live/delegate-pipeline';
+import { formatObjectiveEnvelope } from '@/lib/live/objective';
 import { encodeSseEvent } from '@/lib/live/sse';
 import { insertConversationTurn } from '@/lib/astra/db/conversation-history';
 import { persistTurnToMem0 } from '@/lib/mem0/persist';
@@ -28,13 +29,73 @@ import type {
   LiveDelegationResult,
   LiveDelegationStage,
 } from '@/lib/live/types';
+import type { CaptureMode, FocusAnnotation, FocusAnnotationShape } from '@/lib/camera/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const MAX_CAPTURE_COUNT = 7;
 const MAX_CAPTURE_BYTES = 5 * 1024 * 1024;
+const MAX_FOCUS_ANNOTATIONS = 8;
 const ALLOWED_CAPTURE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+function parseCaptureMode(raw: unknown): CaptureMode | undefined {
+  return raw === 'none' || raw === 'photo' || raw === 'smart_snapshot' ? raw : undefined;
+}
+
+function parseFocusAnnotationShape(raw: unknown): FocusAnnotationShape | null {
+  return raw === 'circle' ||
+    raw === 'rect' ||
+    raw === 'highlight' ||
+    raw === 'arrow' ||
+    raw === 'pointer'
+    ? raw
+    : null;
+}
+
+function parseNormalizedNumber(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1
+    ? raw
+    : null;
+}
+
+function parseFocusAnnotations(raw: unknown): FocusAnnotation[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const parsed: FocusAnnotation[] = [];
+  for (const item of raw.slice(0, MAX_FOCUS_ANNOTATIONS)) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const shape = parseFocusAnnotationShape(record.shape);
+    const x = parseNormalizedNumber(record.x);
+    const y = parseNormalizedNumber(record.y);
+    const width = parseNormalizedNumber(record.width);
+    const height = parseNormalizedNumber(record.height);
+    if (!shape || x === null || y === null || width === null || height === null) continue;
+    if (x + width > 1 || y + height > 1) continue;
+
+    const startX = record.startX === undefined ? undefined : parseNormalizedNumber(record.startX);
+    const startY = record.startY === undefined ? undefined : parseNormalizedNumber(record.startY);
+    const endX = record.endX === undefined ? undefined : parseNormalizedNumber(record.endX);
+    const endY = record.endY === undefined ? undefined : parseNormalizedNumber(record.endY);
+    if (startX === null || startY === null || endX === null || endY === null) continue;
+
+    parsed.push({
+      id: String(record.id ?? '').slice(0, 64) || `focus-${parsed.length + 1}`,
+      shape,
+      x,
+      y,
+      width,
+      height,
+      ...(startX !== undefined ? { startX } : {}),
+      ...(startY !== undefined ? { startY } : {}),
+      ...(endX !== undefined ? { endX } : {}),
+      ...(endY !== undefined ? { endY } : {}),
+    });
+  }
+
+  return parsed.length > 0 ? parsed : undefined;
+}
 
 function encodeResultReplay(turnId: string, result: LiveDelegationResult): string {
   let output = '';
@@ -86,6 +147,8 @@ async function readStreamInput(request: Request): Promise<{
     imageId?: string;
     width?: number;
     height?: number;
+    captureMode?: unknown;
+    focusAnnotations?: unknown;
   }>;
   const files = form.getAll('images').filter((entry): entry is File => entry instanceof File);
   if (files.length > MAX_CAPTURE_COUNT) {
@@ -98,12 +161,16 @@ async function readStreamInput(request: Request): Promise<{
         throw new Error('One of the attached captures is unsupported or too large.');
       }
       const meta = metadata[index];
+      const focusAnnotations = parseFocusAnnotations(meta?.focusAnnotations);
+      const captureMode = parseCaptureMode(meta?.captureMode);
       return {
-        image_id: meta?.imageId,
+        image_id: meta?.imageId?.slice(0, 96),
         mime_type: file.type,
         data_base64: Buffer.from(await file.arrayBuffer()).toString('base64'),
         width: meta?.width,
         height: meta?.height,
+        ...(captureMode ? { capture_mode: captureMode } : {}),
+        ...(focusAnnotations ? { focus_annotations: focusAnnotations } : {}),
       };
     }),
   );
@@ -232,6 +299,8 @@ async function handleStream(request: Request) {
     mimeType: image.mime_type,
     width: image.width,
     height: image.height,
+    captureMode: image.capture_mode,
+    focusAnnotations: image.focus_annotations,
   }));
 
   const stream = new ReadableStream({
@@ -246,9 +315,19 @@ async function handleStream(request: Request) {
         const client = new GoogleGenAI({ apiKey: getGeminiApiKey() });
         const ecosystemActivity = await fetchUserEcosystemActivity(identity.userId);
 
-        const transcriptWithVisualContext = requestWithCaptures.visual_context
-          ? `${requestWithCaptures.transcript}\n\nLive visual context:\n${requestWithCaptures.visual_context}`
-          : requestWithCaptures.transcript;
+        const transcriptWithVisualContext = [
+          requestWithCaptures.objective_envelope
+            ? formatObjectiveEnvelope(requestWithCaptures.objective_envelope)
+            : requestWithCaptures.transcript,
+          requestWithCaptures.objective_envelope
+            ? `Legacy conversation context:\n${requestWithCaptures.transcript}`
+            : '',
+          requestWithCaptures.visual_context
+            ? `Live visual context:\n${requestWithCaptures.visual_context}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n');
         const { spoken_summary, transcript, result } = await streamLiveDelegationToEncoder(
           client,
           encoder,
@@ -271,6 +350,9 @@ async function handleStream(request: Request) {
               requestWithCaptures.mode === 'live_guide'
                 ? { active: true }
                 : undefined,
+            explicitArtifactLanguage:
+              requestWithCaptures.objective_envelope?.language.resolved ?? null,
+            requestLanguage: requestWithCaptures.request_language,
             onStage: async (stage) => {
               currentStage = stage;
               await updateLiveDelegation(turnId, { stage });

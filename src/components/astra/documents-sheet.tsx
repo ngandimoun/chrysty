@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 
 import {
@@ -24,6 +24,7 @@ interface DocumentsSheetProps {
   loadError?: string | null;
   onSelectDocument: (id: string) => void;
   onRemoveDocument: (id: string) => void;
+  onDocumentsMerged?: () => void | Promise<void>;
 }
 
 export function DocumentsSheet({
@@ -35,12 +36,14 @@ export function DocumentsSheet({
   loadError,
   onSelectDocument,
   onRemoveDocument,
+  onDocumentsMerged,
 }: DocumentsSheetProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
-  useEffect(() => {
-    if (!open) setSearchQuery('');
-  }, [open]);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setSearchQuery('');
+    onOpenChange(nextOpen);
+  };
 
   const { unreadCount, totalCount } = useMemo(() => {
     const unread = documents.filter((doc) => !doc.readAt).length;
@@ -49,11 +52,11 @@ export function DocumentsSheet({
 
   const handleSelect = (id: string) => {
     onSelectDocument(id);
-    onOpenChange(false);
+    handleOpenChange(false);
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent
         side="bottom"
         showCloseButton
@@ -105,6 +108,7 @@ export function DocumentsSheet({
             searchQuery={searchQuery}
             onSelect={handleSelect}
             onRemove={onRemoveDocument}
+            onMerged={onDocumentsMerged}
           />
         </div>
       </SheetContent>

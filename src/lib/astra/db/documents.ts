@@ -12,6 +12,7 @@ import type {
   AstraGeneratedDocumentRow,
   AstraReferenceDocumentRow,
 } from '@/lib/supabase/astra-schema.types';
+import { normalizeBcp47 } from '@/lib/language/language-resolution';
 
 function createDocumentId(): string {
   return createUuid();
@@ -149,10 +150,83 @@ export async function listGeneratedDocuments(astraKey: string): Promise<AstraGen
     .from('astra_generated_documents')
     .select('*')
     .eq('astra_key', astraKey)
+    .order('updated_at', { ascending: false })
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
   return (data ?? []) as AstraGeneratedDocumentRow[];
+}
+
+export async function getGeneratedDocumentBySourceKey(
+  astraKey: string,
+  sourceKey: string,
+): Promise<AstraGeneratedDocumentRow | null> {
+  const { data, error } = await createUntypedAdminClient()
+    .from('astra_generated_documents')
+    .select('*')
+    .eq('astra_key', astraKey)
+    .eq('source_key', sourceKey)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as AstraGeneratedDocumentRow | null) ?? null;
+}
+
+export async function getGeneratedDocument(
+  astraKey: string,
+  id: string,
+): Promise<AstraGeneratedDocumentRow | null> {
+  const { data, error } = await createUntypedAdminClient()
+    .from('astra_generated_documents')
+    .select('*')
+    .eq('astra_key', astraKey)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as AstraGeneratedDocumentRow | null) ?? null;
+}
+
+export class GeneratedDocumentConflictError extends Error {
+  constructor(message = 'The document changed since it was opened.') {
+    super(message);
+    this.name = 'GeneratedDocumentConflictError';
+  }
+}
+
+export async function mutateGeneratedDocument(params: {
+  astraKey: string;
+  documentId: string;
+  expectedRevision: number;
+  action: 'update' | 'append' | 'rename';
+  title?: string;
+  jsonPayload?: string;
+  userId?: string;
+  sessionId: string;
+  metadata?: Record<string, unknown>;
+}): Promise<AstraGeneratedDocumentRow> {
+  const { data, error } = await createUntypedAdminClient().rpc(
+    'mutate_astra_generated_document',
+    {
+      p_astra_key: params.astraKey,
+      p_document_id: params.documentId,
+      p_expected_revision: params.expectedRevision,
+      p_action: params.action,
+      p_title: params.title ?? null,
+      p_json_payload: params.jsonPayload ?? null,
+      p_user_id: params.userId ?? null,
+      p_session_id: params.sessionId,
+      p_metadata: params.metadata ?? {},
+    },
+  );
+
+  if (error) {
+    if (error.message.includes('revision_conflict')) {
+      throw new GeneratedDocumentConflictError();
+    }
+    throw new Error(error.message);
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error('Document not found');
+  return row as AstraGeneratedDocumentRow;
 }
 
 export async function addGeneratedDocument(params: {
@@ -166,6 +240,10 @@ export async function addGeneratedDocument(params: {
   jsonPayload?: string;
   buffer?: Buffer;
   jobId?: string;
+  sourceKey?: string;
+  sourceMetadata?: Record<string, unknown>;
+  auditMetadata?: Record<string, unknown>;
+  artifactLanguage?: string;
 }): Promise<AstraGeneratedDocumentRow> {
   const { MAX_GENERATED_DOCUMENT_BYTES, MAX_GENERATED_DOCUMENTS } = await import(
     '@/lib/documents/generated-document-types'
@@ -210,6 +288,10 @@ export async function addGeneratedDocument(params: {
     storage_path: storagePath,
     json_payload: params.jsonPayload ?? null,
     job_id: params.jobId ?? null,
+    source_key: params.sourceKey ?? null,
+    source_metadata: params.sourceMetadata ?? {},
+    audit_metadata: params.auditMetadata ?? {},
+    artifact_language: normalizeBcp47(params.artifactLanguage) ?? 'en',
   };
 
   const { data, error } = await createUntypedAdminClient()
@@ -226,6 +308,39 @@ export async function addGeneratedDocument(params: {
   }
 
   return data as AstraGeneratedDocumentRow;
+}
+
+export async function mergeGeneratedDocuments(params: {
+  astraKey: string;
+  targetId: string;
+  sourceIds: string[];
+  expectedRevisions: Record<string, number>;
+  title: string;
+  jsonPayload: string;
+  userId?: string;
+}): Promise<AstraGeneratedDocumentRow> {
+  const { data, error } = await createUntypedAdminClient().rpc(
+    'merge_astra_generated_documents',
+    {
+      p_astra_key: params.astraKey,
+      p_target_id: params.targetId,
+      p_source_ids: params.sourceIds,
+      p_expected_revisions: params.expectedRevisions,
+      p_title: params.title,
+      p_json_payload: params.jsonPayload,
+      p_user_id: params.userId ?? null,
+      p_metadata: { source: 'documents_ui', confirmed_user_intent: true },
+    },
+  );
+  if (error) {
+    if (error.message.includes('revision_conflict')) {
+      throw new GeneratedDocumentConflictError();
+    }
+    throw new Error(error.message);
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error('Document not found');
+  return row as AstraGeneratedDocumentRow;
 }
 
 export async function updateGeneratedDocument(

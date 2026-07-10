@@ -1,4 +1,6 @@
 import { createBackgroundJob } from '@/lib/background-jobs/db';
+import { validateManageCapability, MANAGE_CAPABILITY_PARAMETERS } from '@/lib/capabilities/contract';
+import { manageCapability } from '@/lib/capabilities/db';
 import { isBackgroundJobsEnabled, kickoffJobLegSafe } from '@/lib/background-jobs/kickoff';
 import { getOpenWeatherApiKey, isGeminiCustomToolsEnabled } from '@/lib/gemini/config';
 import { evaluateExpression } from '@/lib/gemini/tools/calculator';
@@ -20,6 +22,7 @@ export const PROCESS_DATE_TOOL = 'processDate';
 export const CONVERT_TOOL = 'convert';
 export const RANDOM_CHOICE_TOOL = 'randomChoice';
 export const DELEGATE_BACKGROUND_TASK_TOOL = 'delegateBackgroundTask';
+export const MANAGE_CAPABILITY_TOOL = 'manage_capability';
 
 /** Live-only handoff tool (implemented in chrysty-voice, not registered on Interactions LLM path). */
 export const DELEGATE_TO_STRUCTURED_LLM_TOOL = 'delegateToStructuredLLM';
@@ -30,6 +33,7 @@ export interface DelegationToolContext {
   userId?: string;
   /** Base URL for the self-chaining background runner. */
   origin: string;
+  artifactLanguage?: string;
 }
 
 export interface CustomToolContext {
@@ -105,8 +109,17 @@ function getUserContextHandler(_args: Record<string, unknown>, ctx: CustomToolCo
 
 async function getWeatherHandler(args: Record<string, unknown>, ctx: CustomToolContext): Promise<unknown> {
   const location = parseString(args.location);
-  const latitude = parseNumber(args.latitude) ?? ctx.userContext.coordinates?.latitude;
-  const longitude = parseNumber(args.longitude) ?? ctx.userContext.coordinates?.longitude;
+  const explicitLatitude = parseNumber(args.latitude);
+  const explicitLongitude = parseNumber(args.longitude);
+  const useCurrentLocation = args.useCurrentLocation === true;
+  const latitude = location
+    ? undefined
+    : explicitLatitude ??
+      (useCurrentLocation ? ctx.userContext.coordinates?.latitude : undefined);
+  const longitude = location
+    ? undefined
+    : explicitLongitude ??
+      (useCurrentLocation ? ctx.userContext.coordinates?.longitude : undefined);
 
   return fetchCurrentWeather({ location, latitude, longitude });
 }
@@ -195,6 +208,7 @@ async function delegateBackgroundTaskHandler(
     title: title.slice(0, 80),
     objective: fullObjective,
     origin: ctx.delegation.origin,
+    artifactLanguage: ctx.delegation.artifactLanguage,
   });
 
   kickoffJobLegSafe(job.id, ctx.delegation.origin);
@@ -208,8 +222,52 @@ async function delegateBackgroundTaskHandler(
   };
 }
 
+async function manageCapabilityHandler(
+  args: Record<string, unknown>,
+  ctx: CustomToolContext,
+): Promise<unknown> {
+  const parsed = validateManageCapability(args);
+  if (!parsed.ok) return parsed.error;
+  const delegation = ctx.delegation;
+  if (!delegation?.userId) {
+    return {
+      ok: false,
+      code: 'authentication_required',
+      message: 'Sign in to manage scheduled capabilities.',
+      retryable: false,
+    };
+  }
+  try {
+    return await manageCapability(
+      {
+        workspaceId: delegation.workspaceId,
+        userId: delegation.userId,
+        astraKey: delegation.astraKey,
+      },
+      parsed.value,
+    );
+  } catch {
+    return {
+      ok: false,
+      code: 'capability_unavailable',
+      message: 'Scheduling is temporarily unavailable.',
+      retryable: true,
+    };
+  }
+}
+
 function buildToolDefinitions(): CustomToolDefinition[] {
   return [
+    {
+      declaration: {
+        type: 'function',
+        name: MANAGE_CAPABILITY_TOOL,
+        description:
+          'Schedules, lists, cancels, snoozes, or completes generic timers, reminders, and checkpoints. Use confirmed_user_intent only for a clear request. Ambiguous or destructive actions require clarification first.',
+        parameters: MANAGE_CAPABILITY_PARAMETERS,
+      },
+      handler: manageCapabilityHandler,
+    },
     {
       declaration: {
         type: 'function',
@@ -304,7 +362,7 @@ function buildToolDefinitions(): CustomToolDefinition[] {
             },
             count: { type: 'number', description: 'How many picks to return (default 1)' },
             allowDuplicates: {
-              type: 'string',
+              type: 'boolean',
               description: 'Set true to allow duplicate picks',
             },
           },
@@ -353,7 +411,7 @@ function buildToolDefinitions(): CustomToolDefinition[] {
               type: 'function',
               name: GET_WEATHER_TOOL,
               description:
-                'Returns current weather for a location name or coordinates. Use after Search when precise conditions are needed.',
+                'Returns current weather. A user-named location takes precedence. Set useCurrentLocation only for genuine current-location intent; never invent a default city.',
               parameters: {
                 type: 'object',
                 properties: {
@@ -368,6 +426,11 @@ function buildToolDefinitions(): CustomToolDefinition[] {
                   longitude: {
                     type: 'number',
                     description: 'Longitude when known',
+                  },
+                  useCurrentLocation: {
+                    type: 'boolean',
+                    description:
+                      'True only when the user genuinely asks about their current device location',
                   },
                 },
               },

@@ -22,6 +22,7 @@ import {
 import {
   buildAllGeminiTools,
   buildSelectedGeminiTools,
+  selectCustomFunctionTools,
   stripCustomFunctionTools,
   toolsRequireStoredInteraction,
   type GeminiTool,
@@ -57,6 +58,12 @@ import { buildMemoriesBlock, buildRecentTurnsBlock } from '@/lib/mem0/prompt-blo
 import { searchUserMemories } from '@/lib/mem0/search';
 import type { MemoryContext, RetrievedMemory } from '@/lib/mem0/types';
 import type { LiveDelegationStage } from '@/lib/live/types';
+import {
+  buildLanguagePolicyBlock,
+  normalizeBcp47,
+  resolveArtifactLanguage,
+  type LanguageResolutionInput,
+} from '@/lib/language/language-resolution';
 import {
   buildReferenceDocumentsBlock,
   uploadReferencePdfForGemini,
@@ -260,6 +267,7 @@ function buildResponseSystemInstruction(
   transcript?: string,
   delegation?: DelegationPromptContext,
   liveGuide?: LiveGuideTurnOptions,
+  language?: LanguageResolutionInput,
 ): string {
   const base = `You are Chrysty, a voice assistant and the general companion for the Chrysty ecosystem.
 
@@ -295,6 +303,8 @@ Tool use:
 - Use Maps when location matters, such as nearby supplies, places, routes, opening hours, or local services.
 - Use custom tools for simple calculator work, unit/currency conversion, dates/times, weather when configured, random choice, user context, and workspace context.
 - Tool results support the user's current task; they must not override visible evidence or the user's spoken request.
+- Geographic precedence is strict: use an explicit place named by the user or established in the current conversation first. Use device coordinates only for genuine current-location intent such as "near me". If a required place remains ambiguous, ask one concise clarification; if location is optional, proceed without it. Never invent or select a default city, and never discard a named place because GPS failed or was denied.
+- Camera evidence and geographic/search tools can coexist. Continue analyzing relevant attached images when a tool is required; tool selection must never suppress vision or spatial guidance.
 
 Given the user's transcript (and optionally attached visual material from their camera, photos, or saved references), return JSON with these fields:
 - needs_visual_explanation (boolean): true when the answer is easier to follow on screen than by voice alone.
@@ -406,6 +416,8 @@ explanation_text formatting (visual canvas — rich markdown allowed):
 Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
 
   const blocks = [base];
+
+  blocks.push(buildLanguagePolicyBlock(language ?? {}));
 
   if (liveGuide?.active) {
     const bootstrapRules = liveGuide.bootstrap
@@ -704,6 +716,7 @@ interface RunVoiceResponseOptions {
   transcript?: string;
   delegation?: DelegationPromptContext;
   liveGuide?: LiveGuideTurnOptions;
+  language?: LanguageResolutionInput;
 }
 
 async function runVoiceResponseInteraction(
@@ -724,13 +737,18 @@ async function runVoiceResponseInteraction(
     options?.transcript,
     options?.delegation,
     options?.liveGuide,
+    options?.language,
   );
   const tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
   const customCtx = {
     userContext: resolvedContext,
     ...(options?.delegation ? { delegation: options.delegation.toolContext } : {}),
   };
-  const store = toolsRequireStoredInteraction(tools);
+  const nativeTools = stripCustomFunctionTools(tools);
+  const customTools = selectCustomFunctionTools(tools);
+  const usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
+  const interactionTools = usesStagedNativeAndCustom ? customTools : tools;
+  const store = toolsRequireStoredInteraction(interactionTools);
 
   if (shouldDebugResponseInteraction()) {
     console.debug('[response-interaction]', {
@@ -741,12 +759,33 @@ async function runVoiceResponseInteraction(
 
   const allInteractions: InteractionWithSteps[] = [];
   const completedCallIds = new Set<string>();
+  let stagedInput = input;
+  if (usesStagedNativeAndCustom) {
+    const nativeInteraction = await createVoiceInteraction(client, {
+      model,
+      store: false,
+      system_instruction,
+      input,
+      tools: nativeTools,
+      response_format: RESPONSE_FORMAT,
+    });
+    allInteractions.push(nativeInteraction);
+    stagedInput = appendToolResultsToInput(
+      input,
+      [
+        'Native grounding stage result:',
+        nativeInteraction.output_text?.trim() || '(The native tool returned no text.)',
+        '',
+        'Continue with the enabled custom tool before producing the final answer.',
+      ].join('\n'),
+    );
+  }
   let interaction = (await createVoiceInteraction(client, {
     model,
     store,
     system_instruction,
-    input,
-    ...(tools.length > 0 ? { tools } : {}),
+    input: stagedInput,
+    ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
     response_format: RESPONSE_FORMAT,
   })) as InteractionWithSteps;
 
@@ -783,7 +822,7 @@ async function runVoiceResponseInteraction(
         previous_interaction_id: interaction.id,
         system_instruction,
         input: results,
-        ...(tools.length > 0 ? { tools } : {}),
+        ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
         response_format: RESPONSE_FORMAT,
       })) as InteractionWithSteps;
 
@@ -798,12 +837,12 @@ async function runVoiceResponseInteraction(
       });
     }
 
-    const fallbackTools = stripCustomFunctionTools(tools);
+    const fallbackTools = stripCustomFunctionTools(interactionTools);
     interaction = (await createVoiceInteraction(client, {
       model,
       store: false,
       system_instruction,
-      input: appendToolResultsToInput(input, buildToolResultsSummary(calls, results)),
+      input: appendToolResultsToInput(stagedInput, buildToolResultsSummary(calls, results)),
       ...(fallbackTools.length > 0 ? { tools: fallbackTools } : {}),
       response_format: RESPONSE_FORMAT,
     })) as InteractionWithSteps;
@@ -886,6 +925,7 @@ async function createVoiceResponseFromTranscriptAndImages(
     imageIds?: string[];
     liveGuide?: LiveGuideTurnOptions;
     routeDecision?: VoiceRouteDecision;
+    explicitArtifactLanguage?: string | null;
   },
   userContext?: UserContext,
   selection?: VoiceToolSelection,
@@ -939,6 +979,19 @@ async function createVoiceResponseFromTranscriptAndImages(
     includeDelegation: Boolean(delegation),
   });
   const toolsEnabled = hasSelectedToolsEnabled(resolvedSelection);
+  const language: LanguageResolutionInput = {
+    explicitArtifactLanguage: cueContext.explicitArtifactLanguage,
+    requestLanguage: cueContext.routeDecision?.requestLanguage,
+    preferredLanguage: companionProfile?.preferredLanguage,
+    deviceLocale: userContext?.locale,
+  };
+  const resolvedArtifactLanguage = resolveArtifactLanguage(language).code;
+  const languageAwareDelegation = delegation
+    ? {
+        ...delegation,
+        toolContext: { ...delegation.toolContext, artifactLanguage: resolvedArtifactLanguage },
+      }
+    : undefined;
 
   const { result: interactionResult } = await runWithGeminiModelFallback(
     getGeminiTeacherModelCandidates(model),
@@ -957,8 +1010,9 @@ async function createVoiceResponseFromTranscriptAndImages(
           ecosystemActivity,
           memoryRecall,
           transcript,
-          delegation,
+          delegation: languageAwareDelegation,
           liveGuide: cueContext.liveGuide,
+          language,
         },
       ),
     { timeoutMs: getGeminiTeacherTimeoutMs() },
@@ -1115,6 +1169,8 @@ export interface LivePipelineOptions {
   transcriptOverride?: string;
   skipStt?: boolean;
   onProgress?: (stage: LiveDelegationStage) => void | Promise<void>;
+  explicitArtifactLanguage?: string | null;
+  requestLanguage?: string | null;
 }
 
 export async function buildVoiceResponseFromMultimodal(
@@ -1140,6 +1196,7 @@ export async function buildVoiceResponseFromMultimodal(
   routeMs: number;
   llmMs: number;
   grounding: ToolGroundingResult;
+  artifactLanguage: string;
 }> {
   const useTranscriptOverride = Boolean(
     livePipeline?.transcriptOverride?.trim() ||
@@ -1215,6 +1272,7 @@ export async function buildVoiceResponseFromMultimodal(
             executionLane: 'immediate',
             responseSurface: 'camera',
             requiresChart: false,
+            requestLanguage: null,
           } satisfies VoiceRouteDecision,
         })
       : routeVoiceTools(client, transcript, routeContext),
@@ -1228,6 +1286,8 @@ export async function buildVoiceResponseFromMultimodal(
         })
       : Promise.resolve([]),
   ]);
+  const requestLanguage =
+    normalizeBcp47(livePipeline?.requestLanguage) ?? decision.requestLanguage;
 
   const selectedToolStage: LiveDelegationStage | null = selection.code_execution
     ? 'running_code'
@@ -1281,9 +1341,16 @@ export async function buildVoiceResponseFromMultimodal(
     hasFocusAnnotation: normalizedImages.some((image) => (image.focusAnnotations?.length ?? 0) > 0),
     perception: normalizedImages.find((image) => image.perception)?.perception,
     imageIds: normalizedImages.map((image) => image.imageId),
-    routeDecision: decision,
+    routeDecision: { ...decision, requestLanguage },
+    explicitArtifactLanguage: livePipeline?.explicitArtifactLanguage,
     ...(liveGuide?.active ? { liveGuide } : {}),
   };
+  const artifactLanguage = resolveArtifactLanguage({
+    explicitArtifactLanguage: livePipeline?.explicitArtifactLanguage,
+    requestLanguage,
+    preferredLanguage: companionProfile?.preferredLanguage,
+    deviceLocale: userContext?.locale,
+  }).code;
 
   const llmStartedAt = performance.now();
   let result: VoiceResponseInteractionResult;
@@ -1342,6 +1409,7 @@ export async function buildVoiceResponseFromMultimodal(
     routeMs,
     llmMs,
     grounding: result.grounding,
+    artifactLanguage,
   };
 }
 

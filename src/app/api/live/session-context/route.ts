@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { requireLiveServiceAuth } from '@/lib/live/auth';
 import { buildLiveSessionContext } from '@/lib/live/session-context';
 import { resolveLiveAstraIdentity } from '@/lib/live/identity';
-import { upsertLiveSession } from '@/lib/live/db';
+import { getLiveSession, upsertLiveSession } from '@/lib/live/db';
 import { parseCompanionProfileFromJson } from '@/lib/live/parse-init';
 import { parseUserContextFromJson } from '@/lib/live/parse-init';
 import { getMem0MemoryUserId } from '@/lib/mem0/identity';
@@ -33,6 +33,14 @@ async function buildSessionContextResponse(
 ): Promise<NextResponse> {
   const identity = await resolveLiveAstraIdentity(request, input.astraKey);
   if (identity instanceof NextResponse) return identity;
+  const existingSession = await getLiveSession(input.sessionId);
+  if (
+    existingSession &&
+    (existingSession.astra_key !== identity.astraKey ||
+      existingSession.workspace_id !== identity.workspaceId)
+  ) {
+    return NextResponse.json({ error: 'Live session not found.' }, { status: 404 });
+  }
 
   const memoryUserId = identity.userId
     ? getMem0MemoryUserId({ userId: identity.userId, astraKey: identity.astraKey })

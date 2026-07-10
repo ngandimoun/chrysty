@@ -122,3 +122,8 @@ export function toolsRequireStoredInteraction(tools: GeminiTool[]): boolean {
 export function stripCustomFunctionTools(tools: GeminiTool[]): GeminiTool[] {
   return tools.filter((tool) => !isCustomFunctionTool(tool));
 }
+
+/** Keep only custom declarations for a second-stage tool loop after native grounding. */
+export function selectCustomFunctionTools(tools: GeminiTool[]): GeminiTool[] {
+  return tools.filter(isCustomFunctionTool);
+}

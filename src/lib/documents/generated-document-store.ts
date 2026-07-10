@@ -5,6 +5,7 @@ import {
   type GeneratedDocumentRecord,
 } from '@/lib/documents/generated-document-types';
 import { createUuid } from '@/lib/ids';
+import { documentActivity } from '@/lib/documents/living-document';
 
 const DB_NAME = 'chrysty-generated-docs';
 const DB_VERSION = 1;
@@ -75,7 +76,7 @@ function validateRecord(record: Omit<GeneratedDocumentRecord, 'id' | 'createdAt'
 
 export async function listGeneratedDocuments(): Promise<GeneratedDocumentRecord[]> {
   const records = await runTransaction<GeneratedDocumentRecord[]>('readonly', (store) => store.getAll());
-  return records.sort((a, b) => b.createdAt - a.createdAt);
+  return records.sort((a, b) => documentActivity(b) - documentActivity(a));
 }
 
 export async function getGeneratedDocumentById(id: string): Promise<GeneratedDocumentRecord | null> {
@@ -102,6 +103,8 @@ export async function addGeneratedDocument(
     ...record,
     id: createDocumentId(),
     createdAt: Date.now(),
+    updatedAt: Date.now(),
+    revision: 1,
   };
 
   await runTransaction('readwrite', (store) => store.put(full));
@@ -129,6 +132,8 @@ export async function addGeneratedDocuments(
     ...record,
     id: createDocumentId(),
     createdAt: Date.now(),
+    updatedAt: Date.now(),
+    revision: 1,
   }));
 
   await openDatabase().then(
@@ -188,6 +193,8 @@ export async function updateGeneratedDocument(
             ...record,
             ...(typeof patch.title === 'string' ? { title: patch.title.trim() || 'Untitled' } : {}),
             ...(typeof patch.jsonPayload === 'string' ? { jsonPayload: patch.jsonPayload } : {}),
+            revision: (record.revision ?? 1) + 1,
+            updatedAt: Date.now(),
           };
           store.put(updated);
         };

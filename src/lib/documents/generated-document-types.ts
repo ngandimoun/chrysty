@@ -1,5 +1,11 @@
 import type { ChartSpec } from '@/lib/charts/types';
-import type { PlaceCard, WebCitation } from '@/lib/streaming/types';
+import type { CodeExecutionImage } from '@/lib/charts/types';
+import type {
+  GuidanceImage,
+  PlaceCard,
+  WebCitation,
+} from '@/lib/streaming/types';
+import type { PhysicalTaskResponse, VisualGuidanceResponse } from '@/lib/gemini/voice-response-schema';
 import type { StockImageGroup } from '@/lib/visuals/stock-images';
 
 export const MAX_GENERATED_DOCUMENTS = 100;
@@ -11,6 +17,15 @@ export interface GeneratedTextPayload {
   fullText: string;
   webCitations?: WebCitation[];
   stockImages?: StockImageGroup[];
+  canvas?: {
+    charts: ChartSpec[];
+    codeImages: CodeExecutionImage[];
+    places: PlaceCard[];
+    customToolCalls: string[];
+    physicalTask: PhysicalTaskResponse | null;
+    visualGuidance: VisualGuidanceResponse | null;
+    userImages: GuidanceImage[];
+  };
 }
 
 export interface GeneratedChartPayload {
@@ -34,11 +49,17 @@ export interface GeneratedDocumentRecord {
   kind: GeneratedDocumentKind;
   title: string;
   createdAt: number;
+  updatedAt?: number;
   readAt?: number | null;
+  revision?: number;
+  sourceKey?: string | null;
+  sourceMetadata?: Record<string, unknown>;
+  auditMetadata?: Record<string, unknown>;
   mimeType?: string;
   blob?: Blob;
   jsonPayload?: string;
   jobId?: string | null;
+  artifactLanguage?: string;
 }
 
 export class GeneratedDocumentError extends Error {

@@ -8,6 +8,8 @@ import type { LocalAudioTrack } from 'livekit-client';
 import { AudioErrorBanner } from '@/components/astra/audio-error-banner';
 import { BackgroundJobsPill } from '@/components/astra/background-jobs-pill';
 import { BackgroundJobsSheet } from '@/components/astra/background-jobs-sheet';
+import { CapabilitiesSheet } from '@/components/astra/capabilities-sheet';
+import { CapabilityPill } from '@/components/astra/capability-pill';
 import { ChrystyCursorOverlay } from '@/components/astra/chrysty-cursor-overlay';
 import { ConnectedUserBadge } from '@/components/auth/connected-user-badge';
 import { DocumentsSheet } from '@/components/astra/documents-sheet';
@@ -20,6 +22,7 @@ import { VisualizerSlot } from '@/components/astra/visualizer-slot';
 import { VoiceControls } from '@/components/astra/voice-controls';
 import { useBackgroundJobs } from '@/hooks/use-background-jobs';
 import { useCamera } from '@/hooks/use-camera';
+import { useCapabilities } from '@/hooks/use-capabilities';
 import { useGeneratedDocuments } from '@/hooks/use-generated-documents';
 import { useLiveGuide } from '@/hooks/use-live-guide';
 import { useVoiceAgent, type VisualCapture } from '@/hooks/use-voice-agent';
@@ -43,11 +46,15 @@ import { mapObjectCoverAnnotationsToImage } from '@/lib/camera/annotation-coordi
 import { burnFocusAnnotations } from '@/lib/camera/annotate';
 import { CameraError, type CameraAspectRatio, type FocusAnnotation } from '@/lib/camera/types';
 import { hasSavableExplanationContent } from '@/lib/documents/save-explanation-artifacts';
+import { createUuid } from '@/lib/ids';
 import { isPerceptionEnabled, PerceptionManager } from '@/lib/perception/manager';
 import type { BackgroundJobClientItem } from '@/lib/background-jobs/types';
+import type { WorkspaceUiContext } from '@/lib/live/workspace-context';
+import type { ScheduledCapability } from '@/lib/capabilities/types';
 
 const showTranscript = process.env.NEXT_PUBLIC_SHOW_TRANSCRIPT === 'true';
 const geminiLiveEnabled = isGeminiLiveEnabled();
+const LIVE_ANNOTATION_FRAME_DEBOUNCE_MS = 180;
 
 const TranscriptSlot = showTranscript || geminiLiveEnabled
   ? dynamic(() => import('@/components/astra/transcript-slot').then((mod) => mod.TranscriptSlot), {
@@ -71,6 +78,8 @@ export function AstraVoiceShell() {
   const [selectedAnnotationPhotoId, setSelectedAnnotationPhotoId] = useState<string | null>(null);
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const [pendingCapabilityDue, setPendingCapabilityDue] = useState<ScheduledCapability | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isSavingExplanation, setIsSavingExplanation] = useState(false);
@@ -92,12 +101,18 @@ export function AstraVoiceShell() {
   const agentBusyRef = useRef(false);
   const liveFocusAnnotationsRef = useRef<FocusAnnotation[]>([]);
   const cameraFacingRef = useRef<'environment' | 'user'>('environment');
+  const liveCameraContextIdRef = useRef<string | null>(null);
+  const liveAnnotationFingerprintRef = useRef('[]');
   const photoUrlsRef = useRef<Map<string, { url: string; source: Blob }>>(new Map());
   const perceptionManagerRef = useRef<PerceptionManager | null>(null);
   const suspendSessionRef = useRef<() => void>(() => {});
   const notifyLiveCompletionRef = useRef<(title: string, summary?: string | null) => boolean>(
     () => false,
   );
+  const notifyCapabilityDueRef = useRef<(id: string, revision: number, title: string) => boolean>(
+    () => false,
+  );
+  const workspaceContextRef = useRef<WorkspaceUiContext | null>(null);
 
   const isInsecureContext = !useSyncExternalStore(
     () => () => {},
@@ -170,6 +185,13 @@ export function AstraVoiceShell() {
   useEffect(() => {
     cameraFacingRef.current = cameraFacing;
   }, [cameraFacing]);
+
+  useEffect(() => {
+    if (!cameraActive) {
+      liveCameraContextIdRef.current = null;
+      liveAnnotationFingerprintRef.current = '[]';
+    }
+  }, [cameraActive]);
 
   const handleLiveFocusAnnotationsChange = useCallback((annotations: FocusAnnotation[]) => {
     liveFocusAnnotationsRef.current = annotations;
@@ -289,7 +311,7 @@ export function AstraVoiceShell() {
 
     const perception = getPerceptionSnapshot();
     return {
-      imageId: frame.id,
+      imageId: (liveCameraContextIdRef.current ??= `live-camera-${createUuid()}`),
       blob: frame.annotatedBlob ?? frame.blob,
       mimeType: frame.mimeType,
       captureMode: frame.mode,
@@ -337,13 +359,8 @@ export function AstraVoiceShell() {
     return visual;
   }, [getLiveCameraFrame, liveGuideActive, noteLiveGuideFrame]);
 
-  useEffect(() => {
-    if (!liveGuideActive) {
-      setLiveGuideFrameDims(null);
-    }
-  }, [liveGuideActive]);
-
-  const cursorContentDimensions = cameraContentDims ?? liveGuideFrameDims;
+  const cursorContentDimensions =
+    cameraContentDims ?? (liveGuideActive ? liveGuideFrameDims : null);
 
   const {
     documents,
@@ -373,6 +390,17 @@ export function AstraVoiceShell() {
     markCompletedSeen: markJobsSeen,
     refresh: refreshBackgroundJobs,
   } = useBackgroundJobs({ onJobCompleted: handleJobCompleted });
+
+  const handleCapabilityDue = useCallback((capability: ScheduledCapability) => {
+    setPendingCapabilityDue(capability);
+  }, []);
+  const {
+    active: activeCapabilities,
+    now: capabilityNow,
+    act: actOnCapability,
+    requestPush,
+  } = useCapabilities({ onDue: handleCapabilityDue });
+  const nearestCapability = activeCapabilities[0] ?? null;
 
   const handleOpenJobs = useCallback(() => {
     setJobsOpen(true);
@@ -452,6 +480,8 @@ export function AstraVoiceShell() {
     reset: resetLiveAgent,
     sendCapture: sendLiveCapture,
     notifyBackgroundCompletion,
+    notifyCapabilityDue,
+    updateWorkspaceContext,
     sendMonitorTurn: liveSendMonitorTurn,
     sendBootstrapTurn: liveSendBootstrapTurn,
   } = useGeminiLive({
@@ -471,6 +501,37 @@ export function AstraVoiceShell() {
     notifyLiveCompletionRef.current = notifyBackgroundCompletion;
   }, [notifyBackgroundCompletion]);
 
+  useEffect(() => {
+    notifyCapabilityDueRef.current = notifyCapabilityDue;
+  }, [notifyCapabilityDue]);
+
+  useEffect(() => {
+    if (!pendingCapabilityDue || livePhase !== 'live' || isModelSpeaking) return;
+    if (
+      notifyCapabilityDueRef.current(
+        pendingCapabilityDue.id,
+        pendingCapabilityDue.revision,
+        pendingCapabilityDue.title,
+      )
+    ) {
+      setPendingCapabilityDue(null);
+    }
+  }, [isModelSpeaking, livePhase, pendingCapabilityDue]);
+
+  const handleWorkspaceContextChange = useCallback(
+    (context: Parameters<typeof updateWorkspaceContext>[0]) => {
+      workspaceContextRef.current = context;
+      void updateWorkspaceContext(context);
+    },
+    [updateWorkspaceContext],
+  );
+
+  useEffect(() => {
+    if (livePhase === 'live' && workspaceContextRef.current) {
+      void updateWorkspaceContext(workspaceContextRef.current);
+    }
+  }, [livePhase, updateWorkspaceContext]);
+
   const isSpeaking = geminiLiveEnabled ? liveIsSpeaking : httpIsSpeaking;
   const explanation = geminiLiveEnabled ? liveExplanation : httpExplanation;
   const sendMonitorTurn = geminiLiveEnabled ? liveSendMonitorTurn : httpSendMonitorTurn;
@@ -484,6 +545,33 @@ export function AstraVoiceShell() {
     : isConnected;
 
   useEffect(() => {
+    const fingerprint = JSON.stringify(liveFocusAnnotations);
+    if (fingerprint === liveAnnotationFingerprintRef.current) return;
+    if (!geminiLiveEnabled || !cameraActive || livePhase !== 'live') return;
+    liveAnnotationFingerprintRef.current = fingerprint;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const frame = await getLiveCameraFrameWithLiveGuide();
+        if (!frame || cancelled) return;
+        await sendLiveCapture(frame);
+      })().catch(() => {});
+    }, LIVE_ANNOTATION_FRAME_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    cameraActive,
+    getLiveCameraFrameWithLiveGuide,
+    liveFocusAnnotations,
+    livePhase,
+    sendLiveCapture,
+  ]);
+
+  useEffect(() => {
     monitorSenderRef.current = sendMonitorTurn;
   }, [sendMonitorTurn]);
 
@@ -491,12 +579,14 @@ export function AstraVoiceShell() {
     bootstrapSenderRef.current = sendBootstrapTurn;
   }, [sendBootstrapTurn]);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- external Live errors feed a dismissible local banner */
   useEffect(() => {
     if (geminiLiveEnabled && liveError) {
       setErrorMessage(liveError);
       setErrorCode(undefined);
     }
   }, [liveError]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     agentBusyRef.current = geminiLiveEnabled
@@ -1107,6 +1197,7 @@ export function AstraVoiceShell() {
           onSaveExplanation={canSaveExplanation ? handleSaveExplanation : undefined}
           saveExplanationDisabled={explanation.isStreaming || isSavingExplanation}
           isSavingExplanation={isSavingExplanation}
+          onWorkspaceContextChange={handleWorkspaceContextChange}
           pendingPhotoCount={pendingPhotos.length}
           canFlipCamera={canFlipCamera}
           canUseTorch={canUseTorch}
@@ -1180,6 +1271,11 @@ export function AstraVoiceShell() {
 
       <footer className="relative z-20 flex w-full flex-col items-center gap-4">
         <LiveTaskPill delegation={geminiLiveEnabled ? liveDelegation : null} />
+        <CapabilityPill
+          capability={nearestCapability}
+          now={capabilityNow}
+          onOpen={() => setCapabilitiesOpen(true)}
+        />
         <BackgroundJobsPill
           activeJobs={activeBackgroundJobs}
           unseenCompletedCount={unseenCompletedJobs.length}
@@ -1227,6 +1323,7 @@ export function AstraVoiceShell() {
           loadError={documentsError}
           onSelectDocument={handleSelectDocument}
           onRemoveDocument={(id) => void handleRemoveDocument(id)}
+          onDocumentsMerged={refreshDocuments}
         />
         <BackgroundJobsSheet
           open={jobsOpen}
@@ -1234,6 +1331,13 @@ export function AstraVoiceShell() {
           jobs={backgroundJobs}
           onCancelJob={handleCancelBackgroundJob}
           onViewDocuments={handleViewJobDocuments}
+        />
+        <CapabilitiesSheet
+          open={capabilitiesOpen}
+          onOpenChange={setCapabilitiesOpen}
+          capabilities={activeCapabilities}
+          onAction={(input) => void actOnCapability(input)}
+          onEnableNotifications={() => void requestPush()}
         />
       </footer>
     </main>

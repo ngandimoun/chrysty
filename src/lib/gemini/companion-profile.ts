@@ -49,6 +49,11 @@ export function buildCompanionProfileBlock(profile: CompanionProfile): string {
   if (profile.occupation) {
     lines.push(`- Occupation / role: ${profile.occupation}`);
   }
+  if (profile.preferredLanguage) {
+    lines.push(
+      `- Preferred language: ${profile.preferredLanguage.label} (${profile.preferredLanguage.code})`,
+    );
+  }
   if (profile.foodPreferences) {
     lines.push(`- Food & diet: ${profile.foodPreferences}`);
   }

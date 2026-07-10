@@ -144,10 +144,20 @@ function inferCollectionLabel(
 
 function sortDocumentsInCollection(documents: GeneratedDocumentItem[]): GeneratedDocumentItem[] {
   return [...documents].sort((a, b) => {
-    const aOverview = isOverviewTitle(a.title);
-    const bOverview = isOverviewTitle(b.title);
-    if (aOverview !== bOverview) return aOverview ? 1 : -1;
+    const activityDifference =
+      Math.max(b.createdAt, b.updatedAt) - Math.max(a.createdAt, a.updatedAt);
+    if (activityDifference !== 0) return activityDifference;
+    if (Boolean(a.readAt) !== Boolean(b.readAt)) return a.readAt ? 1 : -1;
     return b.createdAt - a.createdAt;
+  });
+}
+
+function sortCollections(collections: DocumentCollection[]): DocumentCollection[] {
+  return [...collections].sort((a, b) => {
+    const aNewest = Math.max(...a.documents.map((doc) => Math.max(doc.createdAt, doc.updatedAt)));
+    const bNewest = Math.max(...b.documents.map((doc) => Math.max(doc.createdAt, doc.updatedAt)));
+    if (aNewest !== bNewest) return bNewest - aNewest;
+    return b.unreadCount - a.unreadCount;
   });
 }
 
@@ -232,15 +242,10 @@ export function groupDocumentsIntoCollections(
     });
   }
 
-  collections.sort((a, b) => {
-    if (a.unreadCount !== b.unreadCount) return b.unreadCount - a.unreadCount;
-    const aNewest = Math.max(...a.documents.map((doc) => doc.createdAt));
-    const bNewest = Math.max(...b.documents.map((doc) => doc.createdAt));
-    return bNewest - aNewest;
-  });
+  const sortedCollections = sortCollections(collections);
 
-  const multiDocCollections = collections.filter((collection) => collection.documents.length > 1);
-  const singletonCollections = collections.filter((collection) => collection.documents.length === 1);
+  const multiDocCollections = sortedCollections.filter((collection) => collection.documents.length > 1);
+  const singletonCollections = sortedCollections.filter((collection) => collection.documents.length === 1);
 
   if (singletonCollections.length > 1) {
     const quickSaves: DocumentCollection = {
@@ -249,12 +254,12 @@ export function groupDocumentsIntoCollections(
       documents: sortDocumentsInCollection(singletonCollections.flatMap((c) => c.documents)),
       unreadCount: singletonCollections.reduce((sum, c) => sum + c.unreadCount, 0),
     };
-    return [...multiDocCollections, quickSaves];
+    return sortCollections([...multiDocCollections, quickSaves]);
   }
 
   if (singletonCollections.length === 1 && multiDocCollections.length === 0) {
     return singletonCollections;
   }
 
-  return [...multiDocCollections, ...singletonCollections];
+  return sortCollections([...multiDocCollections, ...singletonCollections]);
 }

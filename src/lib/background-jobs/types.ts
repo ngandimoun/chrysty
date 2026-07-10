@@ -61,6 +61,7 @@ export interface AstraBackgroundJobRow {
   user_id: string | null;
   title: string;
   objective: string;
+  artifact_language: string;
   status: BackgroundJobStatus;
   plan: JobPlan | null;
   working_state: JobWorkingState;
@@ -82,6 +83,7 @@ export interface BackgroundJobClientItem {
   id: string;
   title: string;
   objective: string;
+  artifactLanguage: string;
   status: BackgroundJobStatus;
   activity: string | null;
   steps: JobProgressStep[];
@@ -100,6 +102,7 @@ export function toBackgroundJobClientItem(row: AstraBackgroundJobRow): Backgroun
     id: row.id,
     title: row.title,
     objective: row.objective,
+    artifactLanguage: row.artifact_language || 'en',
     status: row.status,
     activity: row.progress?.activity ?? null,
     steps: row.progress?.steps ?? [],

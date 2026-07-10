@@ -16,12 +16,14 @@ import {
   type InteractionPreferenceArrayField,
   type InteractionPreferenceTextField,
 } from '@/lib/client/companion-profile';
+import type { LanguagePreference } from '@/lib/language/language-resolution';
 
 const SAVE_DEBOUNCE_MS = 400;
 
 interface UseCompanionProfileResult {
   profile: CompanionProfile;
   updateField: (field: CompanionProfileField, value: string) => void;
+  updatePreferredLanguage: (value?: LanguagePreference) => void;
   updateInteractionPreference: (field: InteractionPreferenceTextField, value: string) => void;
   toggleInteractionPreference: (field: InteractionPreferenceArrayField, value: string) => void;
 }
@@ -116,6 +118,18 @@ export function useCompanionProfile(): UseCompanionProfileResult {
     [scheduleSave],
   );
 
+  const updatePreferredLanguage = useCallback(
+    (value?: LanguagePreference) => {
+      setProfile((current) => {
+        const next = normalizeCompanionProfile({ ...current, preferredLanguage: value });
+        profileRef.current = next;
+        scheduleSave(next);
+        return next;
+      });
+    },
+    [scheduleSave],
+  );
+
   const toggleInteractionPreference = useCallback(
     (field: InteractionPreferenceArrayField, value: string) => {
       setProfile((current) => {
@@ -139,5 +153,11 @@ export function useCompanionProfile(): UseCompanionProfileResult {
     [scheduleSave],
   );
 
-  return { profile, updateField, updateInteractionPreference, toggleInteractionPreference };
+  return {
+    profile,
+    updateField,
+    updatePreferredLanguage,
+    updateInteractionPreference,
+    toggleInteractionPreference,
+  };
 }
