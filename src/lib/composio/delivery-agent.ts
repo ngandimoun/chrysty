@@ -85,7 +85,8 @@ export async function runComposioDeliveryAfterJob(job: AstraBackgroundJobRow): P
 
   let tools;
   try {
-    tools = await loadComposioFunctionDeclarations(userId);
+    const loaded = await loadComposioFunctionDeclarations(userId);
+    tools = loaded.tools;
   } catch (error) {
     console.warn(
       '[composio/delivery] load tools failed',

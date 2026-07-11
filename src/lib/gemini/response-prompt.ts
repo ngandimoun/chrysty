@@ -274,7 +274,11 @@ function buildResponseSystemInstruction(
   delegation?: DelegationPromptContext,
   liveGuide?: LiveGuideTurnOptions,
   language?: LanguageResolutionInput,
-  composioTools?: { toolCount: number; toolNames: string[] } | null,
+  composioTools?: {
+    toolCount: number;
+    toolNames: string[];
+    connectedToolkitSlugs?: string[];
+  } | null,
 ): string {
   const base = `You are Chrysty, a voice assistant and the general companion for the Chrysty ecosystem.
 
@@ -518,6 +522,7 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
       buildComposioCompositionBlock({
         toolCount: composioTools.toolCount,
         toolNames: composioTools.toolNames,
+        connectedToolkitSlugs: composioTools.connectedToolkitSlugs,
       }),
     );
   }
@@ -613,19 +618,44 @@ function shouldDebugResponseInteraction(): boolean {
 }
 
 function logGeminiInteractionError(error: unknown): void {
-  if (!shouldDebugResponseInteraction() && process.env.NODE_ENV === 'production') {
-    return;
-  }
+  const message = error instanceof Error ? error.message : String(error);
+  const record =
+    error && typeof error === 'object' ? (error as Record<string, unknown>) : null;
+  const status =
+    typeof record?.status === 'number'
+      ? record.status
+      : typeof record?.code === 'number'
+        ? record.code
+        : undefined;
 
+  console.error('[response-interaction] gemini_error', {
+    message,
+    ...(status !== undefined ? { status } : {}),
+  });
+}
+
+function isGeminiInvalidArgumentError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (message.includes('invalid argument') || message.includes('invalid_argument')) {
+    return true;
+  }
   if (error && typeof error === 'object') {
-    console.error('[response-interaction] gemini_error', error);
-    return;
+    const record = error as Record<string, unknown>;
+    if (record.status === 400 || record.code === 400) return true;
   }
+  return /\b400\b/.test(message);
+}
 
-  console.error(
-    '[response-interaction] gemini_error',
-    error instanceof Error ? error.message : String(error),
+function isComposioCustomTool(tool: GeminiTool): boolean {
+  return (
+    'name' in tool &&
+    typeof (tool as { name?: unknown }).name === 'string' &&
+    isComposioFunctionToolName((tool as { name: string }).name)
   );
+}
+
+function stripComposioFunctionTools(tools: GeminiTool[]): GeminiTool[] {
+  return tools.filter((tool) => !isComposioCustomTool(tool));
 }
 
 async function createVoiceInteraction(
@@ -758,28 +788,33 @@ async function runVoiceResponseInteraction(
 ): Promise<{ interaction: InteractionWithSteps; allInteractions: InteractionWithSteps[] }> {
   const resolvedContext = resolveUserContext(userContext);
   let tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
-  let composioPromptMeta: { toolCount: number; toolNames: string[] } | null = null;
+  let composioPromptMeta: {
+    toolCount: number;
+    toolNames: string[];
+    connectedToolkitSlugs?: string[];
+  } | null = null;
+  let composioToolNamesThisTurn = new Set<string>();
   if (options?.composioUserId) {
     try {
-      const composioTools = await loadComposioFunctionDeclarations(options.composioUserId);
+      const loaded = await loadComposioFunctionDeclarations(options.composioUserId);
+      composioToolNamesThisTurn = new Set(loaded.tools.map((tool) => tool.name));
       composioPromptMeta = {
-        toolCount: composioTools.length,
-        toolNames: composioTools.map((tool) => tool.name),
+        toolCount: loaded.tools.length,
+        toolNames: loaded.tools.map((tool) => tool.name),
+        connectedToolkitSlugs: loaded.connectedToolkitSlugs,
       };
-      if (composioTools.length > 0) {
-        tools = [...tools, ...composioTools];
+      if (loaded.tools.length > 0) {
+        tools = [...tools, ...loaded.tools];
       }
     } catch (error) {
-      composioPromptMeta = { toolCount: 0, toolNames: [] };
-      if (shouldDebugResponseInteraction()) {
-        console.debug(
-          '[response-interaction] composio_tools_failed',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
+      composioPromptMeta = { toolCount: 0, toolNames: [], connectedToolkitSlugs: [] };
+      console.warn(
+        '[response-interaction] composio_tools_failed',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
-  const system_instruction = buildResponseSystemInstruction(
+  let system_instruction = buildResponseSystemInstruction(
     resolvedContext,
     options?.selection,
     options?.referenceDocuments,
@@ -797,16 +832,17 @@ async function runVoiceResponseInteraction(
     ...(options?.delegation ? { delegation: options.delegation.toolContext } : {}),
     ...(options?.composioUserId ? { composioUserId: options.composioUserId } : {}),
   };
-  const nativeTools = stripCustomFunctionTools(tools);
-  const customTools = selectCustomFunctionTools(tools);
-  const usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
-  const interactionTools = usesStagedNativeAndCustom ? customTools : tools;
-  const store = toolsRequireStoredInteraction(interactionTools);
+  let nativeTools = stripCustomFunctionTools(tools);
+  let customTools = selectCustomFunctionTools(tools);
+  let usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
+  let interactionTools = usesStagedNativeAndCustom ? customTools : tools;
+  let store = toolsRequireStoredInteraction(interactionTools);
 
   if (shouldDebugResponseInteraction()) {
     console.debug('[response-interaction]', {
       store,
       toolCount: tools.length,
+      composioToolCount: composioToolNamesThisTurn.size,
     });
   }
 
@@ -833,14 +869,61 @@ async function runVoiceResponseInteraction(
       ].join('\n'),
     );
   }
-  let interaction = (await createVoiceInteraction(client, {
-    model,
-    store,
-    system_instruction,
-    input: stagedInput,
-    ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
-    response_format: RESPONSE_FORMAT,
-  })) as InteractionWithSteps;
+
+  const createCustomStage = () =>
+    createVoiceInteraction(client, {
+      model,
+      store,
+      system_instruction,
+      input: stagedInput,
+      ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
+      response_format: RESPONSE_FORMAT,
+    });
+
+  let interaction: InteractionWithSteps;
+  try {
+    interaction = (await createCustomStage()) as InteractionWithSteps;
+  } catch (error) {
+    const hadComposio = tools.some(isComposioCustomTool);
+    if (!hadComposio || !isGeminiInvalidArgumentError(error)) {
+      throw error;
+    }
+
+    console.warn(
+      '[response-interaction] composio_tools_rejected_retrying_without',
+      error instanceof Error ? error.message : String(error),
+    );
+
+    tools = stripComposioFunctionTools(tools);
+    composioPromptMeta = {
+      toolCount: 0,
+      toolNames: [],
+      connectedToolkitSlugs: composioPromptMeta?.connectedToolkitSlugs ?? [],
+    };
+    system_instruction = [
+      buildResponseSystemInstruction(
+        resolvedContext,
+        options?.selection,
+        options?.referenceDocuments,
+        options?.companionProfile,
+        options?.ecosystemActivity,
+        options?.memoryRecall,
+        options?.transcript,
+        options?.delegation,
+        options?.liveGuide,
+        options?.language,
+        composioPromptMeta,
+      ),
+      '',
+      'Connected-app tools were unavailable for this turn (invalid tool schema payload). Continue with native/custom tools only. If the user needed a connected app, briefly suggest Settings → Connection.',
+    ].join('\n');
+    nativeTools = stripCustomFunctionTools(tools);
+    customTools = selectCustomFunctionTools(tools);
+    usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
+    interactionTools = usesStagedNativeAndCustom ? customTools : tools;
+    store = toolsRequireStoredInteraction(interactionTools);
+    interaction = (await createCustomStage()) as InteractionWithSteps;
+  }
 
   allInteractions.push(interaction);
 
