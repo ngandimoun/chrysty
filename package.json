@@ -34,6 +34,8 @@
     "@base-ui/react": "^1.6.0",
     "@chrysty/live-embed": "file:packages/live-embed",
     "@chrysty/platform": "file:packages/platform",
+    "@composio/core": "^0.13.1",
+    "@composio/google": "^0.10.0",
     "@google/genai": "^2.3.0",
     "@livekit/components-react": "^2.9.21",
     "@mastra/core": "^1.49.0",

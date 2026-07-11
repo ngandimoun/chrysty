@@ -34,6 +34,11 @@ import {
   type DelegationToolContext,
 } from '@/lib/gemini/custom-tools';
 import {
+  executeComposioToolCall,
+  isComposioFunctionToolName,
+  loadComposioFunctionDeclarations,
+} from '@/lib/composio/tools';
+import {
   buildBackgroundDelegationBlock,
   buildBackgroundJobsStatusBlock,
   type BackgroundJobPromptSummary,
@@ -561,7 +566,9 @@ function extractPendingCustomCalls(
   completedCallIds: Set<string>,
 ): PendingFunctionCall[] {
   return extractFunctionCalls(interaction).filter(
-    (call) => isRegisteredCustomToolName(call.name) && !completedCallIds.has(call.id),
+    (call) =>
+      !completedCallIds.has(call.id) &&
+      (isRegisteredCustomToolName(call.name) || isComposioFunctionToolName(call.name)),
   );
 }
 
@@ -624,12 +631,23 @@ async function createVoiceInteraction(
 
 async function executeCustomToolCalls(
   calls: PendingFunctionCall[],
-  customCtx: { userContext: UserContext },
+  customCtx: { userContext: UserContext; composioUserId?: string },
 ): Promise<CustomToolResultStep[]> {
   return Promise.all(
     calls.map(async (call) => {
       try {
-        const result = await executeCustomTool(call.name, call.arguments, customCtx);
+        let result: unknown;
+        if (isRegisteredCustomToolName(call.name)) {
+          result = await executeCustomTool(call.name, call.arguments, customCtx);
+        } else if (isComposioFunctionToolName(call.name) && customCtx.composioUserId) {
+          result = await executeComposioToolCall(
+            customCtx.composioUserId,
+            call.name,
+            call.arguments,
+          );
+        } else {
+          throw new Error(`Unknown tool: ${call.name}`);
+        }
         return {
           type: 'function_result' as const,
           name: call.name,
@@ -717,6 +735,7 @@ interface RunVoiceResponseOptions {
   delegation?: DelegationPromptContext;
   liveGuide?: LiveGuideTurnOptions;
   language?: LanguageResolutionInput;
+  composioUserId?: string;
 }
 
 async function runVoiceResponseInteraction(
@@ -739,10 +758,26 @@ async function runVoiceResponseInteraction(
     options?.liveGuide,
     options?.language,
   );
-  const tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
+  let tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
+  if (options?.composioUserId) {
+    try {
+      const composioTools = await loadComposioFunctionDeclarations(options.composioUserId);
+      if (composioTools.length > 0) {
+        tools = [...tools, ...composioTools];
+      }
+    } catch (error) {
+      if (shouldDebugResponseInteraction()) {
+        console.debug(
+          '[response-interaction] composio_tools_failed',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
   const customCtx = {
     userContext: resolvedContext,
     ...(options?.delegation ? { delegation: options.delegation.toolContext } : {}),
+    ...(options?.composioUserId ? { composioUserId: options.composioUserId } : {}),
   };
   const nativeTools = stripCustomFunctionTools(tools);
   const customTools = selectCustomFunctionTools(tools);
@@ -933,6 +968,7 @@ async function createVoiceResponseFromTranscriptAndImages(
   ecosystemActivity?: UserEcosystemActivity | null,
   memoryRecall?: MemoryRecallContext,
   delegation?: DelegationPromptContext,
+  composioUserId?: string,
 ): Promise<VoiceResponseInteractionResult> {
   const resolvedSelection = selection ?? {
     google_search: false,
@@ -1013,6 +1049,7 @@ async function createVoiceResponseFromTranscriptAndImages(
           delegation: languageAwareDelegation,
           liveGuide: cueContext.liveGuide,
           language,
+          composioUserId,
         },
       ),
     { timeoutMs: getGeminiTeacherTimeoutMs() },
@@ -1369,6 +1406,7 @@ export async function buildVoiceResponseFromMultimodal(
       ecosystemActivity,
       memoryRecall,
       delegation,
+      memoryContext?.userId,
     );
   } catch (error) {
     if (isInteractionAudioMimeFailure(error) && selection.code_execution) {
@@ -1385,6 +1423,7 @@ export async function buildVoiceResponseFromMultimodal(
         ecosystemActivity,
         memoryRecall,
         delegation,
+        memoryContext?.userId,
       );
     } else {
       throw error;

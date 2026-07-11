@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Camera,
   CameraOff,
@@ -49,19 +49,47 @@ export function VoiceControls({
   onOpenDocuments,
 }: VoiceControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialView, setSettingsInitialView] = useState<
+    'menu' | 'personalization' | 'connection'
+  >('menu');
+  const [composioReturnStatus, setComposioReturnStatus] = useState<'connected' | 'error' | null>(
+    null,
+  );
+  const [composioReturnToolkit, setComposioReturnToolkit] = useState<string | null>(null);
   const [ecosystemOpen, setEcosystemOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const composio = params.get('composio');
+    if (composio !== 'connected' && composio !== 'error') return;
+
+    const toolkit = params.get('toolkit');
+    setComposioReturnStatus(composio);
+    setComposioReturnToolkit(toolkit);
+    setSettingsInitialView('connection');
+    setSettingsOpen(true);
+
+    params.delete('composio');
+    params.delete('toolkit');
+    const next = params.toString();
+    const path = `${window.location.pathname}${next ? `?${next}` : ''}${window.location.hash}`;
+    window.history.replaceState({}, '', path);
+  }, []);
+
   const isRecording = agentState === 'recording';
   const isActive = isRecording || (phase !== 'idle' && phase !== 'error');
   const isProcessing = agentState === 'processing' || (!isRecording && phase === 'thinking');
-  const canRecord = isRecording || (phase !== 'connecting' && phase !== 'reconnecting' && phase !== 'thinking');
+  const canRecord =
+    isRecording || (phase !== 'connecting' && phase !== 'reconnecting' && phase !== 'thinking');
   const primaryActionLabel = liveMode
     ? phase === 'connecting'
       ? 'Connecting…'
       : phase === 'reconnecting'
         ? 'Reconnecting…'
-      : phase === 'idle' || phase === 'error'
-        ? 'Connect'
-        : 'Live'
+        : phase === 'idle' || phase === 'error'
+          ? 'Connect'
+          : 'Live'
     : isRecording
       ? 'Stop & send'
       : isProcessing
@@ -126,20 +154,38 @@ export function VoiceControls({
             </span>
           ) : null}
         </div>
-        <CameraToolButton onClick={() => setSettingsOpen(true)} ariaLabel="Settings">
+        <CameraToolButton
+          onClick={() => {
+            setSettingsInitialView('menu');
+            setSettingsOpen(true);
+          }}
+          ariaLabel="Settings"
+        >
           <Settings className="size-5" />
         </CameraToolButton>
         <CameraToolButton onClick={() => setEcosystemOpen(true)} ariaLabel="Chrysty apps">
           <LayoutGrid className="size-5" />
         </CameraToolButton>
-        <SettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <SettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          initialView={settingsInitialView}
+          composioReturnStatus={composioReturnStatus}
+          composioReturnToolkit={composioReturnToolkit}
+        />
         <EcosystemSheet open={ecosystemOpen} onOpenChange={setEcosystemOpen} />
       </div>
 
       <Button
         type="button"
         size="lg"
-        disabled={recordingDisabled || !canRecord || isProcessing || isBusy || (liveMode && phase !== 'idle' && phase !== 'error')}
+        disabled={
+          recordingDisabled ||
+          !canRecord ||
+          isProcessing ||
+          isBusy ||
+          (liveMode && phase !== 'idle' && phase !== 'error')
+        }
         onClick={onToggleRecording}
         className={cn(
           touchButtonClass,

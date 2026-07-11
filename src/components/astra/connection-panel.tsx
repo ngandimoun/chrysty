@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { Loader2, Plug, Search } from 'lucide-react';
 
 import { touchButtonClass } from '@/components/astra/camera-tool-button';
 import { UserAvatar } from '@/components/auth/connected-user-badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useAuthUser } from '@/hooks/use-auth-user';
 import { isRemotePersistenceEnabled } from '@/lib/astra/api-client';
 import { ensureAstraWorkspaceKeyReady } from '@/lib/astra/workspace-session';
@@ -12,10 +14,72 @@ import { getFirstName } from '@/lib/chrysty/display-name';
 import { getBrowserClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils';
 
-export function ConnectionPanel() {
+interface ToolkitItem {
+  slug: string;
+  name: string;
+  logo: string | null;
+  isNoAuth: boolean;
+  connected: boolean;
+  connectedAccountId: string | null;
+}
+
+interface ConnectionPanelProps {
+  returnStatus?: 'connected' | 'error' | null;
+  returnToolkit?: string | null;
+}
+
+export function ConnectionPanel({
+  returnStatus = null,
+  returnToolkit = null,
+}: ConnectionPanelProps) {
   const { user, loading, error, setUser } = useAuthUser();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [toolkits, setToolkits] = useState<ToolkitItem[]>([]);
+  const [toolkitsLoading, setToolkitsLoading] = useState(false);
+  const [connectingSlug, setConnectingSlug] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (returnStatus === 'connected') {
+      const label = returnToolkit ? returnToolkit.replace(/_/g, ' ') : 'Toolkit';
+      setBanner(`${label} connected.`);
+    } else if (returnStatus === 'error') {
+      setBanner('Connection failed or was cancelled. Try again.');
+    }
+  }, [returnStatus, returnToolkit]);
+
+  const loadToolkits = useCallback(async (search: string) => {
+    setToolkitsLoading(true);
+    setActionError(null);
+    try {
+      const params = new URLSearchParams();
+      if (search.trim()) params.set('q', search.trim());
+      const response = await fetch(`/api/composio/toolkits?${params.toString()}`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+      const payload = (await response.json()) as { items?: ToolkitItem[]; error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to load toolkits');
+      }
+      setToolkits(payload.items ?? []);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to load toolkits');
+      setToolkits([]);
+    } finally {
+      setToolkitsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user || !isRemotePersistenceEnabled()) return;
+    const handle = window.setTimeout(() => {
+      void loadToolkits(query);
+    }, query ? 280 : 0);
+    return () => window.clearTimeout(handle);
+  }, [user, query, loadToolkits]);
 
   async function handleSignOut() {
     if (!isRemotePersistenceEnabled()) return;
@@ -36,6 +100,49 @@ export function ConnectionPanel() {
       setActionError(err instanceof Error ? err.message : 'Sign-out failed');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleConnect(toolkit: ToolkitItem) {
+    if (toolkit.connected || toolkit.isNoAuth) return;
+    setConnectingSlug(toolkit.slug);
+    setActionError(null);
+    try {
+      const response = await fetch('/api/composio/authorize', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolkit: toolkit.slug }),
+      });
+      const payload = (await response.json()) as { redirectUrl?: string; error?: string };
+      if (!response.ok || !payload.redirectUrl) {
+        throw new Error(payload.error || 'Failed to start connection');
+      }
+      window.location.assign(payload.redirectUrl);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to start connection');
+      setConnectingSlug(null);
+    }
+  }
+
+  async function handleDisconnect(toolkit: ToolkitItem) {
+    setConnectingSlug(toolkit.slug);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/composio/connections/${encodeURIComponent(toolkit.slug)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to disconnect');
+      }
+      await loadToolkits(query);
+      setBanner(`${toolkit.name} disconnected.`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to disconnect');
+    } finally {
+      setConnectingSlug(null);
     }
   }
 
@@ -64,7 +171,7 @@ export function ConnectionPanel() {
   const firstName = getFirstName(user.fullName, user.email);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
       <div className="flex items-center gap-3 rounded-xl border border-border bg-background/60 px-4 py-3">
         <UserAvatar user={user} />
         <div className="min-w-0">
@@ -73,12 +180,104 @@ export function ConnectionPanel() {
         </div>
       </div>
 
+      {banner ? <p className="text-sm text-muted-foreground">{banner}</p> : null}
       {displayError ? <p className="text-sm text-destructive">{displayError}</p> : null}
+
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Plug className="size-4 text-muted-foreground" aria-hidden />
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Toolkits
+          </p>
+        </div>
+        <div className="relative">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search toolkits…"
+            className="pl-9"
+            aria-label="Search toolkits"
+          />
+        </div>
+
+        {toolkitsLoading ? (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+            Loading toolkits…
+          </p>
+        ) : toolkits.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {query.trim() ? 'No toolkits match that search.' : 'No popular toolkits available.'}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1 pb-1">
+            {toolkits.map((toolkit) => {
+              const busyRow = connectingSlug === toolkit.slug;
+              return (
+                <li
+                  key={toolkit.slug}
+                  className="flex min-h-11 items-center gap-3 rounded-xl px-2 py-2"
+                >
+                  {toolkit.logo ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={toolkit.logo}
+                      alt=""
+                      className="size-8 shrink-0 rounded-md object-contain"
+                    />
+                  ) : (
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-medium text-muted-foreground">
+                      {toolkit.name.slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">{toolkit.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">{toolkit.slug}</p>
+                  </div>
+                  {toolkit.connected || toolkit.isNoAuth ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {toolkit.isNoAuth && !toolkit.connectedAccountId ? 'No auth' : 'Connected'}
+                      </span>
+                      {toolkit.connectedAccountId ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className={cn('h-8 px-2', touchButtonClass)}
+                          disabled={busyRow}
+                          onClick={() => void handleDisconnect(toolkit)}
+                        >
+                          {busyRow ? '…' : 'Disconnect'}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className={cn('shrink-0', touchButtonClass)}
+                      disabled={busyRow}
+                      onClick={() => void handleConnect(toolkit)}
+                    >
+                      {busyRow ? 'Connecting…' : 'Connect'}
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
 
       <Button
         type="button"
         variant="outline"
-        className={cn('w-full', touchButtonClass)}
+        className={cn('mt-auto w-full', touchButtonClass)}
         disabled={busy}
         onClick={() => void handleSignOut()}
       >
