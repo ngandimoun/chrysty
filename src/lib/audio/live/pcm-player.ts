@@ -2,8 +2,8 @@ import { setAudioSessionType } from '@/lib/audio/audio-context';
 import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
 
 const MODEL_SAMPLE_RATE = 24000;
-/** Slightly lower than 1.0 in iframes to reduce Chrome desktop speaker→mic loopback. */
-const EMBED_PLAYBACK_GAIN = 0.72;
+/** Lower than 1.0 in iframes to reduce Chrome desktop speaker→mic loopback. */
+const EMBED_PLAYBACK_GAIN = 0.55;
 
 function isEmbeddedFrame(): boolean {
   return typeof window !== 'undefined' && window.parent !== window;

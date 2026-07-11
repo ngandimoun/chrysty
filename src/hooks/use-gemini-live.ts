@@ -628,9 +628,13 @@ export function useGeminiLive({
       stopPcmCapture();
       pcmCaptureRef.current = await startLivePcmCapture(mediaStream, (chunk) => {
         const ws = wsRef.current;
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(chunk);
-        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Chrome cross-origin iframe AEC is weak: mute uplink while model speaks
+        // so speaker→mic grit is not fed back to Gemini. Full Live keeps barge-in.
+        const embedded =
+          typeof window !== 'undefined' && window.parent !== window;
+        if (embedded && isModelSpeakingRef.current) return;
+        ws.send(chunk);
       });
     },
     [stopPcmCapture],
