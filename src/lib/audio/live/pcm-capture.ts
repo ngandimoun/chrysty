@@ -49,10 +49,6 @@ class StatefulLinearResampler {
 
 export interface LivePcmCapture {
   stop: () => void;
-  /** Disconnect mic graph and disable track (embed half-duplex during playback). */
-  suspend: () => void;
-  /** Re-enable mic graph after playback ends. */
-  resume: () => void;
 }
 
 export async function startLivePcmCapture(
@@ -148,30 +144,7 @@ export async function startLivePcmCapture(
   node.connect(silentSink);
   silentSink.connect(context.destination);
 
-  let suspended = false;
-  let trackWasEnabled: boolean = track.enabled;
-
   return {
-    suspend() {
-      if (suspended) return;
-      suspended = true;
-      trackWasEnabled = track.enabled;
-      try {
-        source.disconnect();
-      } catch {
-        // Already disconnected.
-      }
-      track.enabled = false;
-      pendingSamples = new Float32Array(0);
-      console.info('[live-capture] suspended');
-    },
-    resume() {
-      if (!suspended) return;
-      suspended = false;
-      track.enabled = trackWasEnabled;
-      source.connect(node);
-      console.info('[live-capture] resumed');
-    },
     stop() {
       node.port.onmessage = null;
       source.disconnect();

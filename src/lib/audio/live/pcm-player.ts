@@ -2,12 +2,6 @@ import { setAudioSessionType } from '@/lib/audio/audio-context';
 import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
 
 const MODEL_SAMPLE_RATE = 24000;
-/** Lower than 1.0 in iframes to reduce Chrome desktop speaker→mic loopback. */
-const EMBED_PLAYBACK_GAIN = 0.55;
-
-function isEmbeddedFrame(): boolean {
-  return typeof window !== 'undefined' && window.parent !== window;
-}
 
 function bytesToFloat32(bytes: Uint8Array): Float32Array {
   if (bytes.byteLength % 2 !== 0) {
@@ -98,8 +92,7 @@ export class LivePcmPlayer {
       }
     };
     const outputGain = context.createGain();
-    const embedded = isEmbeddedFrame();
-    outputGain.gain.value = embedded ? EMBED_PLAYBACK_GAIN : 1;
+    outputGain.gain.value = 1;
     node.connect(outputGain);
     outputGain.connect(context.destination);
     this.context = context;
@@ -112,8 +105,6 @@ export class LivePcmPlayer {
     console.info('[live-audio] player ready', {
       modelSampleRate: MODEL_SAMPLE_RATE,
       contextSampleRate: context.sampleRate,
-      embedded,
-      playbackGain: outputGain.gain.value,
     });
   }
 

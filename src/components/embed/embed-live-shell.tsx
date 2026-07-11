@@ -12,7 +12,7 @@ import {
   acquireLocalAudioTrack,
   releaseLocalAudioTrack,
 } from '@/lib/audio/mic';
-import { primeAudioForVoiceSession } from '@/lib/audio/audio-context';
+import { primeAudioForVoiceSession, unlockSharedAudioContextSync } from '@/lib/audio/audio-context';
 import type { AgentState } from '@/hooks/use-voice-agent';
 import {
   EMBED_MESSAGE,
@@ -171,6 +171,7 @@ export function EmbedLiveShell() {
 
   const ensureLiveMic = useCallback(async () => {
     primeAudioForVoiceSession();
+    unlockSharedAudioContextSync('play-and-record');
     if (audioTrackRef.current) return;
     const track = await acquireLocalAudioTrack();
     audioTrackRef.current = track;
