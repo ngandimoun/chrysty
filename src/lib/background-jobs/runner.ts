@@ -24,6 +24,7 @@ import {
   updateBackgroundJob,
 } from './db';
 import { kickoffJobLegSafe, resolveConfiguredJobOrigin, resolveJobOrigin } from './kickoff';
+import { scheduleComposioDeliveryAfterJob } from '@/lib/composio/delivery-agent';
 import type {
   AstraBackgroundJobRow,
   JobPlan,
@@ -533,6 +534,13 @@ Write the final wrap-up: a short spoken summary for the user, and a concise fina
     completed_at: new Date().toISOString(),
     heartbeat_at: new Date().toISOString(),
   });
+
+  // Mastra never calls Composio mid-crew. After finalize, a thin delivery agent
+  // may send/post via connected apps when the objective asked for it.
+  const completedJob = await getBackgroundJob(job.id);
+  if (completedJob?.status === 'completed' && completedJob.user_id) {
+    scheduleComposioDeliveryAfterJob(completedJob);
+  }
 }
 
 function chainNextLeg(job: AstraBackgroundJobRow): void {

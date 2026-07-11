@@ -36,10 +36,16 @@ Photos and delegation:
 
 How to delegate:
 - Call delegateBackgroundTask with a rich objective: restate the user's goal completely, folding in every relevant detail from the conversation (constraints, budget, dates, preferences, prior context). The crew sees only this objective.
+- When you used connected-app tools earlier in this turn (e.g. read email), fold those facts into the objective so the crew does not need those apps.
+- If the user also wants a later send/post/share via a connected app after research finishes, state that delivery intent clearly in the objective (who/what/where). The research crew does not call those apps; a follow-up delivery step may after documents are ready.
 - When photos were captured this turn, also fill visualContext with a thorough description of what the images show.
 - Then respond immediately: spoken_transcript confirms the work has started, says roughly what will be produced and that it takes a few minutes, and that results will appear in their Documents workspace. Keep it natural and brief.
 - Do NOT attempt to produce the full deliverable yourself in the same turn, and do not wait for results — they arrive later.
-- The user can keep talking to you, ask about progress, or start more background jobs meanwhile.`;
+- The user can keep talking to you, ask about progress, or start more background jobs meanwhile.
+
+Composition with other tools:
+- You may call connected-app tools and native/custom tools before or after deciding to delegate — jumble as needed in this turn.
+- Prefer connected-app tools over native Search when the ask clearly matches a loaded toolkit; keep ambiguous open-web on native Search.`;
 }
 
 /** Live status of the user's background jobs for progress questions and completion announcements. */

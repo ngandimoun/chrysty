@@ -34,6 +34,7 @@ import {
   type DelegationToolContext,
 } from '@/lib/gemini/custom-tools';
 import {
+  buildComposioCompositionBlock,
   executeComposioToolCall,
   isComposioFunctionToolName,
   loadComposioFunctionDeclarations,
@@ -273,6 +274,7 @@ function buildResponseSystemInstruction(
   delegation?: DelegationPromptContext,
   liveGuide?: LiveGuideTurnOptions,
   language?: LanguageResolutionInput,
+  composioTools?: { toolCount: number; toolNames: string[] } | null,
 ): string {
   const base = `You are Chrysty, a voice assistant and the general companion for the Chrysty ecosystem.
 
@@ -511,6 +513,15 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
     }
   }
 
+  if (composioTools) {
+    blocks.push(
+      buildComposioCompositionBlock({
+        toolCount: composioTools.toolCount,
+        toolNames: composioTools.toolNames,
+      }),
+    );
+  }
+
   return blocks.join('\n\n');
 }
 
@@ -746,6 +757,28 @@ async function runVoiceResponseInteraction(
   options?: RunVoiceResponseOptions,
 ): Promise<{ interaction: InteractionWithSteps; allInteractions: InteractionWithSteps[] }> {
   const resolvedContext = resolveUserContext(userContext);
+  let tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
+  let composioPromptMeta: { toolCount: number; toolNames: string[] } | null = null;
+  if (options?.composioUserId) {
+    try {
+      const composioTools = await loadComposioFunctionDeclarations(options.composioUserId);
+      composioPromptMeta = {
+        toolCount: composioTools.length,
+        toolNames: composioTools.map((tool) => tool.name),
+      };
+      if (composioTools.length > 0) {
+        tools = [...tools, ...composioTools];
+      }
+    } catch (error) {
+      composioPromptMeta = { toolCount: 0, toolNames: [] };
+      if (shouldDebugResponseInteraction()) {
+        console.debug(
+          '[response-interaction] composio_tools_failed',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
   const system_instruction = buildResponseSystemInstruction(
     resolvedContext,
     options?.selection,
@@ -757,23 +790,8 @@ async function runVoiceResponseInteraction(
     options?.delegation,
     options?.liveGuide,
     options?.language,
+    composioPromptMeta,
   );
-  let tools = options?.tools ?? buildAllGeminiTools(resolvedContext);
-  if (options?.composioUserId) {
-    try {
-      const composioTools = await loadComposioFunctionDeclarations(options.composioUserId);
-      if (composioTools.length > 0) {
-        tools = [...tools, ...composioTools];
-      }
-    } catch (error) {
-      if (shouldDebugResponseInteraction()) {
-        console.debug(
-          '[response-interaction] composio_tools_failed',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
-  }
   const customCtx = {
     userContext: resolvedContext,
     ...(options?.delegation ? { delegation: options.delegation.toolContext } : {}),
