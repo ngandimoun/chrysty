@@ -149,7 +149,7 @@ export async function startLivePcmCapture(
   silentSink.connect(context.destination);
 
   let suspended = false;
-  let trackWasEnabled = track.enabled;
+  let trackWasEnabled: boolean = track.enabled;
 
   return {
     suspend() {
