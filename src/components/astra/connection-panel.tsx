@@ -54,19 +54,22 @@ export function ConnectionPanel({
     setToolkitsLoading(true);
     setActionError(null);
     try {
+      const trimmed = search.trim();
+      // Composio search needs ≥3 chars; shorter queries load the popular list instead.
       const params = new URLSearchParams();
-      if (search.trim()) params.set('q', search.trim());
-      const response = await fetch(`/api/composio/toolkits?${params.toString()}`, {
+      if (trimmed.length >= 3) params.set('q', trimmed);
+      const qs = params.toString();
+      const response = await fetch(`/api/composio/toolkits${qs ? `?${qs}` : ''}`, {
         method: 'GET',
         credentials: 'include',
       });
       const payload = (await response.json()) as { items?: ToolkitItem[]; error?: string };
       if (!response.ok) {
-        throw new Error(payload.error || 'Failed to load toolkits');
+        throw new Error('Failed to load toolkits');
       }
       setToolkits(payload.items ?? []);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to load toolkits');
+    } catch {
+      setActionError("Couldn't load toolkits. Try again.");
       setToolkits([]);
     } finally {
       setToolkitsLoading(false);
@@ -75,9 +78,12 @@ export function ConnectionPanel({
 
   useEffect(() => {
     if (!user || !isRemotePersistenceEnabled()) return;
+    const trimmed = query.trim();
+    // While typing 1–2 chars, keep showing the current popular list (no request).
+    if (trimmed.length > 0 && trimmed.length < 3) return;
     const handle = window.setTimeout(() => {
       void loadToolkits(query);
-    }, query ? 280 : 0);
+    }, trimmed.length >= 3 ? 280 : 0);
     return () => window.clearTimeout(handle);
   }, [user, query, loadToolkits]);
 
@@ -116,11 +122,11 @@ export function ConnectionPanel({
       });
       const payload = (await response.json()) as { redirectUrl?: string; error?: string };
       if (!response.ok || !payload.redirectUrl) {
-        throw new Error(payload.error || 'Failed to start connection');
+        throw new Error('Failed to start connection');
       }
       window.location.assign(payload.redirectUrl);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to start connection');
+    } catch {
+      setActionError("Couldn't start connection. Try again.");
       setConnectingSlug(null);
     }
   }
@@ -133,14 +139,13 @@ export function ConnectionPanel({
         method: 'DELETE',
         credentials: 'include',
       });
-      const payload = (await response.json()) as { error?: string };
       if (!response.ok) {
-        throw new Error(payload.error || 'Failed to disconnect');
+        throw new Error('Failed to disconnect');
       }
       await loadToolkits(query);
       setBanner(`${toolkit.name} disconnected.`);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to disconnect');
+    } catch {
+      setActionError("Couldn't disconnect. Try again.");
     } finally {
       setConnectingSlug(null);
     }
@@ -198,7 +203,7 @@ export function ConnectionPanel({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search toolkits…"
+            placeholder="Search (3+ characters)…"
             className="pl-9"
             aria-label="Search toolkits"
           />
@@ -211,7 +216,9 @@ export function ConnectionPanel({
           </p>
         ) : toolkits.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            {query.trim() ? 'No toolkits match that search.' : 'No popular toolkits available.'}
+            {query.trim().length >= 3
+              ? 'No toolkits match that search.'
+              : 'No popular toolkits available.'}
           </p>
         ) : (
           <ul className="flex flex-col gap-1 pb-1">

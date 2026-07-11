@@ -20,7 +20,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  const search = request.nextUrl.searchParams.get('q')?.trim() || undefined;
+  // Composio requires search queries to be at least 3 characters.
+  const rawQuery = request.nextUrl.searchParams.get('q')?.trim() || '';
+  const search = rawQuery.length >= 3 ? rawQuery : undefined;
 
   try {
     const session = await getOrCreateUserSession(userId);
@@ -63,7 +65,7 @@ export async function GET(request: NextRequest) {
       totalPages: toolkits.totalPages,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to list toolkits';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[composio/toolkits]', error);
+    return NextResponse.json({ error: 'Failed to load toolkits' }, { status: 500 });
   }
 }
