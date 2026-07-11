@@ -1,7 +1,13 @@
-import { setAudioSessionType } from '@/lib/audio/audio-context';
+import {
+  getSharedAudioContext,
+  setAudioSessionType,
+} from '@/lib/audio/audio-context';
 import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
+import { isEmbeddedFrame } from '@/lib/audio/live/embed-frame';
 
 const MODEL_SAMPLE_RATE = 24000;
+/** Light duck in iframes only — full Live stays at 1.0. */
+const EMBED_PLAYBACK_GAIN = 0.5;
 
 function bytesToFloat32(bytes: Uint8Array): Float32Array {
   if (bytes.byteLength % 2 !== 0) {
@@ -37,6 +43,7 @@ export interface LivePcmAudioChunk {
 
 export class LivePcmPlayer {
   private context: AudioContext | null = null;
+  private ownsContext = false;
   private node: AudioWorkletNode | null = null;
   private outputGain: GainNode | null = null;
   private initializing: Promise<void> | null = null;
@@ -66,18 +73,30 @@ export class LivePcmPlayer {
   }
 
   private async initializeInternal(): Promise<void> {
-    const AudioContextCtor =
-      window.AudioContext ||
-      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) throw new Error('Web Audio API is not supported in this browser.');
-
     setAudioSessionType('play-and-record');
+
+    const embedded = isEmbeddedFrame();
     let context: AudioContext;
-    try {
-      context = new AudioContextCtor({ sampleRate: MODEL_SAMPLE_RATE });
-    } catch {
-      context = new AudioContextCtor();
+    let ownsContext: boolean;
+
+    if (embedded) {
+      const shared = getSharedAudioContext();
+      if (!shared) throw new Error('Web Audio API is not supported in this browser.');
+      context = shared;
+      ownsContext = false;
+    } else {
+      const AudioContextCtor =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextCtor) throw new Error('Web Audio API is not supported in this browser.');
+      try {
+        context = new AudioContextCtor({ sampleRate: MODEL_SAMPLE_RATE });
+      } catch {
+        context = new AudioContextCtor();
+      }
+      ownsContext = true;
     }
+
     await context.audioWorklet.addModule('/audio/live/pcm-player-processor.js');
     const node = new AudioWorkletNode(context, 'live-pcm-player-processor', {
       outputChannelCount: [1],
@@ -92,10 +111,11 @@ export class LivePcmPlayer {
       }
     };
     const outputGain = context.createGain();
-    outputGain.gain.value = 1;
+    outputGain.gain.value = embedded ? EMBED_PLAYBACK_GAIN : 1;
     node.connect(outputGain);
     outputGain.connect(context.destination);
     this.context = context;
+    this.ownsContext = ownsContext;
     this.node = node;
     this.outputGain = outputGain;
     if (context.state === 'suspended') await context.resume();
@@ -105,6 +125,8 @@ export class LivePcmPlayer {
     console.info('[live-audio] player ready', {
       modelSampleRate: MODEL_SAMPLE_RATE,
       contextSampleRate: context.sampleRate,
+      shared: !ownsContext,
+      playbackGain: outputGain.gain.value,
     });
   }
 
@@ -136,9 +158,10 @@ export class LivePcmPlayer {
     this.node = null;
     this.outputGain?.disconnect();
     this.outputGain = null;
-    if (this.context && this.context.state !== 'closed') {
+    if (this.ownsContext && this.context && this.context.state !== 'closed') {
       await this.context.close();
     }
     this.context = null;
+    this.ownsContext = false;
   }
 }

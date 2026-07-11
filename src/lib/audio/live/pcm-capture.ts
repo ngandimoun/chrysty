@@ -51,22 +51,38 @@ export interface LivePcmCapture {
   stop: () => void;
 }
 
+export interface LivePcmCaptureOptions {
+  /** When set (embed shared context), capture joins this context instead of creating one. */
+  audioContext?: AudioContext;
+}
+
 export async function startLivePcmCapture(
   stream: MediaStream,
   onPcmChunk: (chunk: ArrayBuffer) => void,
+  options?: LivePcmCaptureOptions,
 ): Promise<LivePcmCapture> {
   const track = stream.getAudioTracks().find((candidate) => candidate.readyState === 'live');
   if (!track || !track.enabled) {
     throw new Error('Microphone track is not live.');
   }
 
+  const shared = options?.audioContext ?? null;
   let context: AudioContext;
-  try {
-    context = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
-  } catch {
-    // Some browsers throw when the requested rate is unsupported.
-    context = new AudioContext();
+  let ownsContext: boolean;
+
+  if (shared && shared.state !== 'closed') {
+    context = shared;
+    ownsContext = false;
+  } else {
+    try {
+      context = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
+    } catch {
+      // Some browsers throw when the requested rate is unsupported.
+      context = new AudioContext();
+    }
+    ownsContext = true;
   }
+
   await context.audioWorklet.addModule('/audio/live/pcm-recorder-processor.js');
 
   if (context.state === 'suspended') {
@@ -90,6 +106,7 @@ export async function startLivePcmCapture(
     requested: CAPTURE_SAMPLE_RATE,
     actual: actualRate,
     resampling: needsResample,
+    shared: !ownsContext,
   });
 
   const source = context.createMediaStreamSource(stream);
@@ -150,7 +167,9 @@ export async function startLivePcmCapture(
       source.disconnect();
       node.disconnect();
       silentSink.disconnect();
-      void context.close();
+      if (ownsContext) {
+        void context.close();
+      }
     },
   };
 }

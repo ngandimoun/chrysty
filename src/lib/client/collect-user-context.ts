@@ -77,6 +77,12 @@ export async function collectUserContextForRequest(): Promise<UserContextFormFie
     clientTimestamp: new Date().toISOString(),
   };
 
+  // Cross-origin iframes typically block geolocation via Permissions-Policy.
+  if (typeof window !== 'undefined' && window.parent !== window) {
+    fields.geolocationStatus = 'unavailable';
+    return fields;
+  }
+
   const geolocation = await requestGeolocation();
   fields.geolocationStatus = geolocation.status;
   if (geolocation.position) {

@@ -5,9 +5,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { resolveActiveAstraKey, uploadAstraKeyHeaders } from '@/lib/astra/identity';
 import { astraFetch } from '@/lib/astra/api-client';
 import {
+  getSharedAudioContext,
   primeAudioForVoiceSession,
   unlockSharedAudioContextSync,
 } from '@/lib/audio/audio-context';
+import { isEmbeddedFrame } from '@/lib/audio/live/embed-frame';
 import { startLivePcmCapture, type LivePcmCapture } from '@/lib/audio/live/pcm-capture';
 import { LivePcmPlayer } from '@/lib/audio/live/pcm-player';
 import { loadCompanionProfileForRequest } from '@/lib/client/append-reference-documents';
@@ -626,11 +628,18 @@ export function useGeminiLive({
   const startMicCapture = useCallback(
     async (mediaStream: MediaStream) => {
       stopPcmCapture();
-      pcmCaptureRef.current = await startLivePcmCapture(mediaStream, (chunk) => {
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(chunk);
-      });
+      const sharedContext = isEmbeddedFrame() ? getSharedAudioContext() ?? undefined : undefined;
+      pcmCaptureRef.current = await startLivePcmCapture(
+        mediaStream,
+        (chunk) => {
+          const ws = wsRef.current;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          // Embed only: skip uplink while model speaks (mic graph stays live).
+          if (isEmbeddedFrame() && isModelSpeakingRef.current) return;
+          ws.send(chunk);
+        },
+        { audioContext: sharedContext },
+      );
     },
     [stopPcmCapture],
   );
