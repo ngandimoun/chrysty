@@ -6,6 +6,7 @@ interface LiveEmbedContextValue {
     isOpen: boolean;
     isConnecting: boolean;
     statusLine: string | null;
+    hasHostContext: boolean;
 }
 export declare function useChrystyLiveEmbed(): LiveEmbedContextValue;
 interface ChrystyLiveEmbedProviderProps extends LiveEmbedConfig {

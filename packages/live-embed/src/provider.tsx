@@ -14,9 +14,20 @@ import {
 import { buildEmbedLiveUrl, configureLiveEmbed, getLiveEmbedConfig } from './configure.js';
 import { captureElement, getSelectedText, buildNearbyExcerpt } from './capture.js';
 import { HostGuideOverlay, mergeLiveGuideUpdate } from './host-overlay.js';
-import { isLiveGuideMessage, parseEmbedMessage, sendHostReady } from './post-message.js';
-import { EMBED_MESSAGE, type LiveEmbedConfig, type LiveGuideUpdate } from './types.js';
-import { useChrystyHostContext } from './host-context.js';
+import { setHostRegistrar } from './host-registry.js';
+import {
+  isLiveGuideMessage,
+  parseEmbedMessage,
+  sendCaptureUpdate,
+  sendContextUpdate,
+  sendHostReady,
+} from './post-message.js';
+import {
+  EMBED_MESSAGE,
+  type HostContextValue,
+  type LiveEmbedConfig,
+  type LiveGuideUpdate,
+} from './types.js';
 
 interface LiveEmbedContextValue {
   openLive: () => Promise<void>;
@@ -24,6 +35,7 @@ interface LiveEmbedContextValue {
   isOpen: boolean;
   isConnecting: boolean;
   statusLine: string | null;
+  hasHostContext: boolean;
 }
 
 const LiveEmbedContext = createContext<LiveEmbedContextValue | null>(null);
@@ -40,6 +52,8 @@ interface ChrystyLiveEmbedProviderProps extends LiveEmbedConfig {
   children: ReactNode;
 }
 
+type HostStackEntry = { token: symbol; value: HostContextValue };
+
 export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmbedProviderProps) {
   const configKey = `${config.astraEmbedUrl}|${config.worker}|${config.mode ?? 'iframe'}`;
   const lastKeyRef = useRef('');
@@ -54,35 +68,76 @@ export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmb
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [liveGuide, setLiveGuide] = useState<LiveGuideUpdate | null>(null);
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+  const [embedUrl, setEmbedUrl] = useState('');
+  const [hostStack, setHostStack] = useState<HostStackEntry[]>([]);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hostReadySentRef = useRef(false);
-  const hostCtx = useChrystyHostContext();
+  const hostCtx = hostStack.length > 0 ? hostStack[hostStack.length - 1]!.value : null;
+  const hostCtxRef = useRef(hostCtx);
+  hostCtxRef.current = hostCtx;
+
+  useEffect(() => {
+    setHostRegistrar((token, value) => {
+      setHostStack((prev) => {
+        const idx = prev.findIndex((entry) => entry.token === token);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { token, value };
+          return next;
+        }
+        return [...prev, { token, value }];
+      });
+      return () => {
+        setHostStack((prev) => prev.filter((entry) => entry.token !== token));
+      };
+    });
+    return () => setHostRegistrar(null);
+  }, []);
+
+  const buildPayloadContext = useCallback((active: HostContextValue) => {
+    const selection = getSelectedText();
+    const element = active.captureTarget
+      ? document.querySelector(active.captureTarget)
+      : null;
+    const fullText = element?.textContent ?? '';
+    return {
+      context: {
+        ...active.context,
+        selectedPassage: selection || active.context.selectedPassage,
+        nearbyExcerpt:
+          active.context.nearbyExcerpt ??
+          buildNearbyExcerpt(fullText, selection || active.context.selectedPassage || ''),
+      },
+      selection,
+    };
+  }, []);
 
   const pushHostPayload = useCallback(async () => {
     const iframe = iframeRef.current;
-    if (!iframe || !hostCtx) return;
+    const active = hostCtxRef.current;
+    if (!iframe || !active) return;
 
-    const selection = getSelectedText();
-    const element = hostCtx.captureTarget
-      ? document.querySelector(hostCtx.captureTarget)
-      : null;
-    const fullText = element?.textContent ?? '';
-    const context = {
-      ...hostCtx.context,
-      selectedPassage: selection || hostCtx.context.selectedPassage,
-      nearbyExcerpt:
-        hostCtx.context.nearbyExcerpt ??
-        buildNearbyExcerpt(fullText, selection || hostCtx.context.selectedPassage || ''),
-    };
-
+    const { context, selection } = buildPayloadContext(active);
     setStatusLine('Capturing your screen…');
-    const capture = await captureElement(hostCtx.captureTarget);
-    setTargetRect(hostCtx.getCaptureTargetRect());
+    const capture = await captureElement(active.captureTarget);
+    setTargetRect(active.getCaptureTargetRect());
     setStatusLine(capture ? 'Chrysty is ready — talk in the panel below' : 'Chrysty is ready');
 
     sendHostReady(iframe, { context, capture, selection });
     hostReadySentRef.current = true;
-  }, [hostCtx]);
+  }, [buildPayloadContext]);
+
+  const pushHostUpdate = useCallback(async () => {
+    const iframe = iframeRef.current;
+    const active = hostCtxRef.current;
+    if (!iframe || !active || !hostReadySentRef.current) return;
+
+    const { context, selection } = buildPayloadContext(active);
+    sendContextUpdate(iframe, context);
+    const capture = await captureElement(active.captureTarget);
+    setTargetRect(active.getCaptureTargetRect());
+    sendCaptureUpdate(iframe, { capture, selection });
+  }, [buildPayloadContext]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -109,23 +164,32 @@ export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmb
       }
       if (message.type === EMBED_MESSAGE.CLOSED) {
         setIsOpen(false);
+        setEmbedUrl('');
         setLiveGuide(null);
         setStatusLine(null);
+        hostReadySentRef.current = false;
         return;
       }
       const guide = isLiveGuideMessage(message);
       if (guide) {
         setLiveGuide((prev) => mergeLiveGuideUpdate(prev, guide));
-        setTargetRect(hostCtx?.getCaptureTargetRect() ?? null);
+        setTargetRect(hostCtxRef.current?.getCaptureTargetRect() ?? null);
       }
     };
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [hostCtx, isOpen, pushHostPayload]);
+  }, [isOpen, pushHostPayload]);
+
+  // When host context changes while Live is open, update iframe without remounting.
+  useEffect(() => {
+    if (!isOpen || !hostReadySentRef.current || !hostCtx) return;
+    void pushHostUpdate();
+  }, [hostCtx, isOpen, pushHostUpdate]);
 
   const openLive = useCallback(async () => {
-    if (!hostCtx) {
+    const active = hostCtxRef.current;
+    if (!active) {
       setStatusLine('Missing page context');
       return;
     }
@@ -133,24 +197,23 @@ export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmb
     setIsConnecting(true);
     setLiveGuide(null);
     setStatusLine('Opening Chrysty Live…');
+    setEmbedUrl(
+      buildEmbedLiveUrl({
+        worker: getLiveEmbedConfig().worker,
+        entityId: active.context.entityId,
+        title: active.context.title,
+      }),
+    );
     setIsOpen(true);
-  }, [hostCtx]);
+  }, []);
 
   const closeLive = useCallback(() => {
     setIsOpen(false);
+    setEmbedUrl('');
     setLiveGuide(null);
     setStatusLine(null);
     hostReadySentRef.current = false;
   }, []);
-
-  const embedUrl = useMemo(() => {
-    if (!hostCtx) return '';
-    return buildEmbedLiveUrl({
-      worker: getLiveEmbedConfig().worker,
-      entityId: hostCtx.context.entityId,
-      title: hostCtx.context.title,
-    });
-  }, [hostCtx, isOpen]);
 
   const value = useMemo(
     (): LiveEmbedContextValue => ({
@@ -159,8 +222,9 @@ export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmb
       isOpen,
       isConnecting,
       statusLine,
+      hasHostContext: hostCtx !== null,
     }),
-    [closeLive, isConnecting, isOpen, openLive, statusLine],
+    [closeLive, hostCtx, isConnecting, isOpen, openLive, statusLine],
   );
 
   return (
@@ -173,13 +237,13 @@ export function ChrystyLiveEmbedProvider({ children, ...config }: ChrystyLiveEmb
           targetRect={targetRect}
         />
       ) : null}
-      {isOpen ? (
+      {isOpen && embedUrl ? (
         <div
-          className="fixed inset-0 z-[9999] flex flex-col bg-background/80 backdrop-blur-sm"
+          className="fixed bottom-24 right-6 z-[9999] flex w-[min(24rem,calc(100vw-2rem))] h-[min(32rem,calc(100vh-8rem))] flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl"
           role="dialog"
           aria-label="Ask Chrysty Live"
         >
-          <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2">
             <p className="truncate text-sm font-medium text-foreground">
               {statusLine ?? 'Chrysty Live'}
             </p>

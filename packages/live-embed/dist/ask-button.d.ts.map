@@ -1,1 +1,1 @@
-{"version":3,"file":"ask-button.d.ts","sourceRoot":"","sources":["../src/ask-button.tsx"],"names":[],"mappings":"AAOA,UAAU,qBAAqB;IAC7B,SAAS,CAAC,EAAE,MAAM,CAAC;IACnB,KAAK,CAAC,EAAE,MAAM,CAAC;CAChB;AAED,wBAAgB,gBAAgB,CAAC,EAC/B,SAAc,EACd,KAAqB,GACtB,EAAE,qBAAqB,sCAkBvB"}
+{"version":3,"file":"ask-button.d.ts","sourceRoot":"","sources":["../src/ask-button.tsx"],"names":[],"mappings":"AAMA,UAAU,qBAAqB;IAC7B,SAAS,CAAC,EAAE,MAAM,CAAC;IACnB,KAAK,CAAC,EAAE,MAAM,CAAC;CAChB;AAkBD,wBAAgB,gBAAgB,CAAC,EAC/B,SAAc,EACd,KAAqB,GACtB,EAAE,qBAAqB,sCA+BvB"}

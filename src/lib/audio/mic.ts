@@ -100,17 +100,47 @@ export function mapGetUserMediaError(error: unknown): MicError {
   }
 }
 
+const MIC_CONSTRAINTS: MediaTrackConstraints = {
+  channelCount: 1,
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
+/**
+ * Acquire mic with AEC/NS/AGC, then re-apply constraints.
+ * Chrome can report weaker echoCancellation in cross-origin iframes unless reinforced.
+ */
 export async function acquireLocalAudioTrack(): Promise<LocalAudioTrack> {
   assertSecureContext();
   assertMicSupported();
 
   try {
-    return await createLocalAudioTrack({
+    const track = await createLocalAudioTrack({
       channelCount: 1,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
     });
+
+    const mediaTrack = track.mediaStreamTrack;
+    try {
+      await mediaTrack.applyConstraints(MIC_CONSTRAINTS);
+    } catch (error) {
+      console.warn('[mic] applyConstraints failed', error);
+    }
+
+    const settings = mediaTrack.getSettings();
+    console.info('[mic] track settings', {
+      echoCancellation: settings.echoCancellation,
+      noiseSuppression: settings.noiseSuppression,
+      autoGainControl: settings.autoGainControl,
+      sampleRate: settings.sampleRate,
+      channelCount: settings.channelCount,
+      embedded: typeof window !== 'undefined' && window.parent !== window,
+    });
+
+    return track;
   } catch (error) {
     throw mapGetUserMediaError(error);
   }

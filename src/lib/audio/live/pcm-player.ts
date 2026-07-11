@@ -2,6 +2,12 @@ import { setAudioSessionType } from '@/lib/audio/audio-context';
 import { decodeBase64ToBytes } from '@/lib/audio/decode-base64';
 
 const MODEL_SAMPLE_RATE = 24000;
+/** Slightly lower than 1.0 in iframes to reduce Chrome desktop speaker→mic loopback. */
+const EMBED_PLAYBACK_GAIN = 0.72;
+
+function isEmbeddedFrame(): boolean {
+  return typeof window !== 'undefined' && window.parent !== window;
+}
 
 function bytesToFloat32(bytes: Uint8Array): Float32Array {
   if (bytes.byteLength % 2 !== 0) {
@@ -38,6 +44,7 @@ export interface LivePcmAudioChunk {
 export class LivePcmPlayer {
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private outputGain: GainNode | null = null;
   private initializing: Promise<void> | null = null;
   private firstAudioFired = false;
   private onFirstAudio?: () => void;
@@ -90,9 +97,14 @@ export class LivePcmPlayer {
         this.onPlaybackEnd?.();
       }
     };
-    node.connect(context.destination);
+    const outputGain = context.createGain();
+    const embedded = isEmbeddedFrame();
+    outputGain.gain.value = embedded ? EMBED_PLAYBACK_GAIN : 1;
+    node.connect(outputGain);
+    outputGain.connect(context.destination);
     this.context = context;
     this.node = node;
+    this.outputGain = outputGain;
     if (context.state === 'suspended') await context.resume();
     if (context.state !== 'running') {
       throw new Error(`Live playback context is ${context.state}.`);
@@ -100,6 +112,8 @@ export class LivePcmPlayer {
     console.info('[live-audio] player ready', {
       modelSampleRate: MODEL_SAMPLE_RATE,
       contextSampleRate: context.sampleRate,
+      embedded,
+      playbackGain: outputGain.gain.value,
     });
   }
 
@@ -129,6 +143,8 @@ export class LivePcmPlayer {
     this.clear();
     this.node?.disconnect();
     this.node = null;
+    this.outputGain?.disconnect();
+    this.outputGain = null;
     if (this.context && this.context.state !== 'closed') {
       await this.context.close();
     }

@@ -14,6 +14,15 @@ export function sendHostReady(iframe, input) {
         selection: input.selection ?? '',
     });
 }
+export function sendContextUpdate(iframe, context) {
+    postToEmbedIframe(iframe, EMBED_MESSAGE.CONTEXT_UPDATE, { context });
+}
+export function sendCaptureUpdate(iframe, input) {
+    postToEmbedIframe(iframe, EMBED_MESSAGE.CAPTURE_UPDATE, {
+        capture: input.capture ?? null,
+        selection: input.selection ?? '',
+    });
+}
 export function parseEmbedMessage(event, allowedParentOrigin) {
     if (allowedParentOrigin && event.origin !== allowedParentOrigin) {
         if (!isAllowedChrystyOrigin(event.origin))

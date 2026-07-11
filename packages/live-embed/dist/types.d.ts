@@ -41,6 +41,11 @@ export interface HostUiContext {
     artifactLanguage?: string;
     worker?: string;
 }
+export interface HostContextValue {
+    context: HostUiContext;
+    captureTarget?: string;
+    getCaptureTargetRect: () => DOMRect | null;
+}
 export interface ScreenCaptureResult {
     base64: string;
     mimeType: 'image/jpeg';

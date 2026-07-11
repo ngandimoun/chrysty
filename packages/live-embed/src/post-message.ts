@@ -32,6 +32,26 @@ export function sendHostReady(
   });
 }
 
+export function sendContextUpdate(
+  iframe: HTMLIFrameElement,
+  context: HostUiContext,
+): void {
+  postToEmbedIframe(iframe, EMBED_MESSAGE.CONTEXT_UPDATE, { context });
+}
+
+export function sendCaptureUpdate(
+  iframe: HTMLIFrameElement,
+  input: {
+    capture?: ScreenCaptureResult | null;
+    selection?: string;
+  },
+): void {
+  postToEmbedIframe(iframe, EMBED_MESSAGE.CAPTURE_UPDATE, {
+    capture: input.capture ?? null,
+    selection: input.selection ?? '',
+  });
+}
+
 export function parseEmbedMessage(
   event: MessageEvent,
   allowedParentOrigin?: string,

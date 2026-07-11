@@ -4,18 +4,14 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
-  useState,
+  useRef,
   type ReactNode,
 } from 'react';
 
-import type { HostUiContext } from './types.js';
-
-export interface HostContextValue {
-  context: HostUiContext;
-  captureTarget?: string;
-  getCaptureTargetRect: () => DOMRect | null;
-}
+import { registerHostContext } from './host-registry.js';
+import type { HostContextValue, HostUiContext } from './types.js';
 
 const HostPageContext = createContext<HostContextValue | null>(null);
 
@@ -31,22 +27,54 @@ interface ChrystyHostContextProps extends HostUiContext {
 export function ChrystyHostContext({
   captureTarget,
   children,
-  ...context
+  source,
+  entityId,
+  title,
+  selectedPassage,
+  nearbyExcerpt,
+  artifactLanguage,
+  worker,
 }: ChrystyHostContextProps) {
+  const tokenRef = useRef(Symbol('chrysty-host-context'));
+
   const getCaptureTargetRect = useCallback((): DOMRect | null => {
     if (typeof document === 'undefined' || !captureTarget) return null;
     const el = document.querySelector(captureTarget);
     return el instanceof HTMLElement ? el.getBoundingClientRect() : null;
   }, [captureTarget]);
 
-  const value = useMemo(
-    (): HostContextValue => ({
+  const value = useMemo((): HostContextValue => {
+    const context: HostUiContext = {
+      title,
+      ...(source !== undefined ? { source } : {}),
+      ...(entityId !== undefined ? { entityId } : {}),
+      ...(selectedPassage !== undefined ? { selectedPassage } : {}),
+      ...(nearbyExcerpt !== undefined ? { nearbyExcerpt } : {}),
+      ...(artifactLanguage !== undefined ? { artifactLanguage } : {}),
+      ...(worker !== undefined ? { worker } : {}),
+    };
+    return {
       context,
       captureTarget,
       getCaptureTargetRect,
-    }),
-    [captureTarget, context, getCaptureTargetRect],
-  );
+    };
+  }, [
+    artifactLanguage,
+    captureTarget,
+    entityId,
+    getCaptureTargetRect,
+    nearbyExcerpt,
+    selectedPassage,
+    source,
+    title,
+    worker,
+  ]);
+
+  useEffect(() => {
+    return registerHostContext(tokenRef.current, value);
+  }, [value]);
 
   return <HostPageContext.Provider value={value}>{children}</HostPageContext.Provider>;
 }
+
+export type { HostContextValue };
