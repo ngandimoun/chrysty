@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 
+import { buildEmbedFrameAncestorsCsp } from './src/lib/embed/frame-headers';
+
 const withSerwist = withSerwistInit({
   swSrc: 'src/app/sw.ts',
   swDest: 'public/sw.js',
@@ -54,6 +56,19 @@ const nextConfig: NextConfig = {
   allowedDevOrigins,
   images: {
     formats: ['image/avif', 'image/webp'],
+  },
+  async headers() {
+    return [
+      {
+        source: '/embed/:path*',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: buildEmbedFrameAncestorsCsp(),
+          },
+        ],
+      },
+    ];
   },
 };
 

@@ -17,6 +17,15 @@
       ]
     },
     {
+      "source": "/embed/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors 'self' https://chrysty.dev https://*.chrysty.dev"
+        }
+      ]
+    },
+    {
       "source": "/manifest.webmanifest",
       "headers": [
         {
