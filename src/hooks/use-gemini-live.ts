@@ -199,6 +199,10 @@ export function useGeminiLive({
   const userContextRefreshTimerRef = useRef<number | null>(null);
   const latestUserContextRef = useRef<UserContext | null>(null);
   const userContextRefreshInFlightRef = useRef(false);
+  const embedPlaybackActiveRef = useRef(false);
+  const embedResumeTimerRef = useRef<number | null>(null);
+
+  const EMBED_PLAYBACK_TAIL_MS = 250;
 
   useEffect(() => {
     isModelSpeakingRef.current = isModelSpeaking;
@@ -250,24 +254,64 @@ export function useGeminiLive({
     setExplanation(EMPTY_EXPLANATION);
   }, [clearExplanationImages]);
 
+  const clearEmbedMicResumeTimer = useCallback(() => {
+    if (embedResumeTimerRef.current !== null) {
+      window.clearTimeout(embedResumeTimerRef.current);
+      embedResumeTimerRef.current = null;
+    }
+  }, []);
+
+  const beginEmbedPlayback = useCallback(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    clearEmbedMicResumeTimer();
+    if (embedPlaybackActiveRef.current) return;
+    embedPlaybackActiveRef.current = true;
+    isModelSpeakingRef.current = true;
+    pcmCaptureRef.current?.suspend();
+  }, [clearEmbedMicResumeTimer]);
+
+  const scheduleEmbedMicResume = useCallback(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    clearEmbedMicResumeTimer();
+    embedResumeTimerRef.current = window.setTimeout(() => {
+      embedResumeTimerRef.current = null;
+      embedPlaybackActiveRef.current = false;
+      isModelSpeakingRef.current = false;
+      pcmCaptureRef.current?.resume();
+    }, EMBED_PLAYBACK_TAIL_MS);
+  }, [clearEmbedMicResumeTimer]);
+
+  const forceEmbedMicResume = useCallback(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    clearEmbedMicResumeTimer();
+    embedPlaybackActiveRef.current = false;
+    isModelSpeakingRef.current = false;
+    pcmCaptureRef.current?.resume();
+  }, [clearEmbedMicResumeTimer]);
+
   const getPlayer = useCallback(() => {
     if (!playerRef.current) {
       const player = new LivePcmPlayer();
       player.setOnFirstAudio(() => {
+        isModelSpeakingRef.current = true;
         setIsModelSpeaking(true);
+        beginEmbedPlayback();
         onSpeakingStartRef.current?.();
       });
       player.setOnPlaybackEnd(() => {
+        isModelSpeakingRef.current = false;
         setIsModelSpeaking(false);
+        scheduleEmbedMicResume();
         onSpeakingEndRef.current?.();
       });
       playerRef.current = player;
     }
     return playerRef.current;
-  }, []);
+  }, [beginEmbedPlayback, scheduleEmbedMicResume]);
 
   const enqueueLiveAudio = useCallback(
     (data: string, sampleRate: number) => {
+      beginEmbedPlayback();
       void getPlayer()
         .enqueue({
           data,
@@ -279,7 +323,7 @@ export function useGeminiLive({
           });
         });
     },
-    [getPlayer],
+    [beginEmbedPlayback, getPlayer],
   );
 
   const drainPendingAudio = useCallback(() => {
@@ -629,11 +673,10 @@ export function useGeminiLive({
       pcmCaptureRef.current = await startLivePcmCapture(mediaStream, (chunk) => {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        // Chrome cross-origin iframe AEC is weak: mute uplink while model speaks
-        // so speaker→mic grit is not fed back to Gemini. Full Live keeps barge-in.
+        // Chrome cross-origin iframe: skip uplink while model speaks (belt-and-suspenders).
         const embedded =
           typeof window !== 'undefined' && window.parent !== window;
-        if (embedded && isModelSpeakingRef.current) return;
+        if (embedded && embedPlaybackActiveRef.current) return;
         ws.send(chunk);
       });
     },
@@ -706,6 +749,7 @@ export function useGeminiLive({
           break;
         case 'interrupted':
           getPlayer().clear();
+          forceEmbedMicResume();
           setIsModelSpeaking(false);
           setTranscriptChunks((current) =>
             current.map((chunk) => (chunk.isFinal ? chunk : { ...chunk, isFinal: true })),
@@ -755,7 +799,7 @@ export function useGeminiLive({
           break;
       }
     },
-    [beginDelegationStream, closeWebSocket, enqueueLiveAudio, getPlayer, updateTranscription],
+    [beginDelegationStream, closeWebSocket, enqueueLiveAudio, forceEmbedMicResume, getPlayer, updateTranscription],
   );
 
   const finishConnectedHandshake = useCallback(
@@ -933,11 +977,14 @@ export function useGeminiLive({
       ws.onclose = () => {
         wsRef.current = null;
         pendingMediaStreamRef.current = null;
+        clearEmbedMicResumeTimer();
+        embedPlaybackActiveRef.current = false;
         stopPcmCapture();
         stopFrameTimer();
         stopUserContextRefreshTimer();
         getPlayer().clear();
         setIsModelSpeaking(false);
+        isModelSpeakingRef.current = false;
 
         if (intentionalCloseRef.current) {
           return;
@@ -964,6 +1011,7 @@ export function useGeminiLive({
       };
     });
   }, [
+    clearEmbedMicResumeTimer,
     closeWebSocket,
     finishConnectedHandshake,
     getPlayer,
@@ -1001,15 +1049,19 @@ export function useGeminiLive({
     clearResumptionHandle();
     stopDelegationStream();
     closeWebSocket();
+    clearEmbedMicResumeTimer();
+    embedPlaybackActiveRef.current = false;
     stopPcmCapture();
     stopFrameTimer();
     stopUserContextRefreshTimer();
     getPlayer().clear();
     setIsModelSpeaking(false);
+    isModelSpeakingRef.current = false;
     setTranscriptChunks([]);
     setDelegation(null);
     setPhase('idle');
   }, [
+    clearEmbedMicResumeTimer,
     closeWebSocket,
     getPlayer,
     stopDelegationStream,
