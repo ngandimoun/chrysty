@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "npm run build --prefix packages/platform",
+    "postinstall": "npm run build --prefix packages/platform && npm run build --prefix packages/live-embed",
     "dev": "next dev --turbopack",
     "dev:https": "node scripts/print-dev-urls.mjs && next dev --turbopack --experimental-https -H 0.0.0.0 --experimental-https-key ./certificates/dev-key.pem --experimental-https-cert ./certificates/dev-cert.pem",
     "dev:ipad": "pnpm dev:https",
@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
+    "@chrysty/live-embed": "file:packages/live-embed",
     "@chrysty/platform": "file:packages/platform",
     "@google/genai": "^2.3.0",
     "@livekit/components-react": "^2.9.21",
