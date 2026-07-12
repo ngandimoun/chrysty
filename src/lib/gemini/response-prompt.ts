@@ -37,6 +37,7 @@ import {
   buildComposioCompositionBlock,
   executeComposioToolCall,
   isComposioFunctionToolName,
+  isMetaComposioToolName,
   loadComposioFunctionDeclarations,
 } from '@/lib/composio/tools';
 import {
@@ -278,6 +279,7 @@ function buildResponseSystemInstruction(
     toolCount: number;
     toolNames: string[];
     connectedToolkitSlugs?: string[];
+    toolsTemporarilyUnavailable?: boolean;
   } | null,
 ): string {
   const base = `You are Chrysty, a voice assistant and the general companion for the Chrysty ecosystem.
@@ -523,6 +525,7 @@ Voice reference for spoken delivery: ${getGeminiTtsVoice()}`;
         toolCount: composioTools.toolCount,
         toolNames: composioTools.toolNames,
         connectedToolkitSlugs: composioTools.connectedToolkitSlugs,
+        toolsTemporarilyUnavailable: composioTools.toolsTemporarilyUnavailable,
       }),
     );
   }
@@ -656,6 +659,21 @@ function isComposioCustomTool(tool: GeminiTool): boolean {
 
 function stripComposioFunctionTools(tools: GeminiTool[]): GeminiTool[] {
   return tools.filter((tool) => !isComposioCustomTool(tool));
+}
+
+function keepMetaComposioToolsOnly(tools: GeminiTool[]): GeminiTool[] {
+  return tools.filter((tool) => {
+    if (!isComposioCustomTool(tool)) return true;
+    const name = (tool as { name: string }).name;
+    return isMetaComposioToolName(name);
+  });
+}
+
+function hasNonMetaComposioTools(tools: GeminiTool[]): boolean {
+  return tools.some((tool) => {
+    if (!isComposioCustomTool(tool)) return false;
+    return !isMetaComposioToolName((tool as { name: string }).name);
+  });
 }
 
 async function createVoiceInteraction(
@@ -792,12 +810,13 @@ async function runVoiceResponseInteraction(
     toolCount: number;
     toolNames: string[];
     connectedToolkitSlugs?: string[];
+    toolsTemporarilyUnavailable?: boolean;
   } | null = null;
-  let composioToolNamesThisTurn = new Set<string>();
+  let composioMetaOnly = false;
   if (options?.composioUserId) {
     try {
       const loaded = await loadComposioFunctionDeclarations(options.composioUserId);
-      composioToolNamesThisTurn = new Set(loaded.tools.map((tool) => tool.name));
+      composioMetaOnly = loaded.metaOnly;
       composioPromptMeta = {
         toolCount: loaded.tools.length,
         toolNames: loaded.tools.map((tool) => tool.name),
@@ -842,7 +861,8 @@ async function runVoiceResponseInteraction(
     console.debug('[response-interaction]', {
       store,
       toolCount: tools.length,
-      composioToolCount: composioToolNamesThisTurn.size,
+      composioMetaOnly,
+      composioToolCount: tools.filter(isComposioCustomTool).length,
     });
   }
 
@@ -889,40 +909,84 @@ async function runVoiceResponseInteraction(
       throw error;
     }
 
-    console.warn(
-      '[response-interaction] composio_tools_rejected_retrying_without',
-      error instanceof Error ? error.message : String(error),
-    );
-
-    tools = stripComposioFunctionTools(tools);
-    composioPromptMeta = {
-      toolCount: 0,
-      toolNames: [],
-      connectedToolkitSlugs: composioPromptMeta?.connectedToolkitSlugs ?? [],
+    const pinned = composioPromptMeta?.connectedToolkitSlugs ?? [];
+    const rebuildStage = (nextTools: GeminiTool[], meta: typeof composioPromptMeta, extraNote?: string) => {
+      tools = nextTools;
+      composioPromptMeta = meta;
+      system_instruction = [
+        buildResponseSystemInstruction(
+          resolvedContext,
+          options?.selection,
+          options?.referenceDocuments,
+          options?.companionProfile,
+          options?.ecosystemActivity,
+          options?.memoryRecall,
+          options?.transcript,
+          options?.delegation,
+          options?.liveGuide,
+          options?.language,
+          composioPromptMeta,
+        ),
+        ...(extraNote ? ['', extraNote] : []),
+      ].join('\n');
+      nativeTools = stripCustomFunctionTools(tools);
+      customTools = selectCustomFunctionTools(tools);
+      usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
+      interactionTools = usesStagedNativeAndCustom ? customTools : tools;
+      store = toolsRequireStoredInteraction(interactionTools);
     };
-    system_instruction = [
-      buildResponseSystemInstruction(
-        resolvedContext,
-        options?.selection,
-        options?.referenceDocuments,
-        options?.companionProfile,
-        options?.ecosystemActivity,
-        options?.memoryRecall,
-        options?.transcript,
-        options?.delegation,
-        options?.liveGuide,
-        options?.language,
-        composioPromptMeta,
-      ),
-      '',
-      'Connected-app tools were unavailable for this turn (invalid tool schema payload). Continue with native/custom tools only. If the user needed a connected app, briefly suggest Settings → Connection.',
-    ].join('\n');
-    nativeTools = stripCustomFunctionTools(tools);
-    customTools = selectCustomFunctionTools(tools);
-    usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
-    interactionTools = usesStagedNativeAndCustom ? customTools : tools;
-    store = toolsRequireStoredInteraction(interactionTools);
-    interaction = (await createCustomStage()) as InteractionWithSteps;
+
+    // Cascade 1: if non-meta app tools were present, retry with meta-only router tools.
+    if (hasNonMetaComposioTools(tools)) {
+      console.warn(
+        '[response-interaction] composio_tools_rejected_retrying_meta_only',
+        error instanceof Error ? error.message : String(error),
+      );
+      const metaOnlyTools = keepMetaComposioToolsOnly(tools);
+      const metaNames = metaOnlyTools
+        .filter(isComposioCustomTool)
+        .map((tool) => (tool as { name: string }).name);
+      rebuildStage(metaOnlyTools, {
+        toolCount: metaNames.length,
+        toolNames: metaNames,
+        connectedToolkitSlugs: pinned,
+      });
+      try {
+        interaction = (await createCustomStage()) as InteractionWithSteps;
+      } catch (metaError) {
+        if (!isGeminiInvalidArgumentError(metaError)) {
+          throw metaError;
+        }
+        console.warn(
+          '[response-interaction] composio_meta_rejected_retrying_without',
+          metaError instanceof Error ? metaError.message : String(metaError),
+        );
+        rebuildStage(stripComposioFunctionTools(tools), {
+          toolCount: 0,
+          toolNames: [],
+          connectedToolkitSlugs: pinned,
+          toolsTemporarilyUnavailable: pinned.length > 0,
+        }, pinned.length > 0
+          ? 'Connected apps are linked, but router tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
+          : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
+        interaction = (await createCustomStage()) as InteractionWithSteps;
+      }
+    } else {
+      // Already meta-only (or only meta failed): drop Composio, keep honest pinned messaging.
+      console.warn(
+        '[response-interaction] composio_tools_rejected_retrying_without',
+        error instanceof Error ? error.message : String(error),
+      );
+      rebuildStage(stripComposioFunctionTools(tools), {
+        toolCount: 0,
+        toolNames: [],
+        connectedToolkitSlugs: pinned,
+        toolsTemporarilyUnavailable: pinned.length > 0,
+      }, pinned.length > 0
+        ? 'Connected apps are linked, but router tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
+        : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
+      interaction = (await createCustomStage()) as InteractionWithSteps;
+    }
   }
 
   allInteractions.push(interaction);

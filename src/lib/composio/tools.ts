@@ -179,14 +179,21 @@ function toolkitPrefix(slug: string): string {
   return slug.replace(/[^a-z0-9]/gi, '').toUpperCase();
 }
 
-function isMetaComposioTool(name: string): boolean {
+export function isMetaComposioToolName(name: string): boolean {
   const upper = name.toUpperCase();
   return (
     upper.startsWith('COMPOSIO_') ||
     upper.includes('SEARCH_TOOLS') ||
     upper.includes('MULTI_EXECUTE') ||
+    upper.includes('GET_TOOL_SCHEMAS') ||
     upper.includes('MANAGE_CONNECTIONS')
   );
+}
+
+export function selectMetaComposioDeclarations(
+  declarations: CustomFunctionDeclaration[],
+): CustomFunctionDeclaration[] {
+  return declarations.filter((tool) => isMetaComposioToolName(tool.name));
 }
 
 function toolMatchesToolkit(name: string, slug: string): boolean {
@@ -218,7 +225,7 @@ function capComposioDeclarations(
   };
 
   for (const tool of declarations) {
-    if (isMetaComposioTool(tool.name)) take(tool);
+    if (isMetaComposioToolName(tool.name)) take(tool);
   }
 
   for (const slug of connectedToolkitSlugs) {
@@ -318,18 +325,20 @@ async function syncAndPinConnectedAccounts(
 export interface LoadedComposioTools {
   tools: CustomFunctionDeclaration[];
   connectedToolkitSlugs: string[];
+  metaOnly: boolean;
 }
 
 /**
  * Load Gemini-ready Composio tools for a user.
  * Syncs remote Connected accounts into the session pin + Supabase mirror, sanitizes
- * schemas for Interactions, and caps declaration count.
+ * schemas for Interactions, and prefers Tool Router meta-tools when OAuth apps are pinned
+ * (avoids Gemini 400s from large/unsafe Gmail/Calendar schemas).
  */
 export async function loadComposioFunctionDeclarations(
   userId: string,
 ): Promise<LoadedComposioTools> {
   if (!isComposioToolsEnabled() || !userId) {
-    return { tools: [], connectedToolkitSlugs: [] };
+    return { tools: [], connectedToolkitSlugs: [], metaOnly: false };
   }
 
   const session = await getOrCreateUserSession(userId);
@@ -341,22 +350,28 @@ export async function loadComposioFunctionDeclarations(
     .map(mapGoogleDeclarationToCustom)
     .filter((tool): tool is CustomFunctionDeclaration => tool !== null);
 
-  const capped = capComposioDeclarations(declarations, connectedToolkitSlugs);
-  rememberComposioToolNames(capped.map((tool) => tool.name));
-  return { tools: capped, connectedToolkitSlugs };
+  const preferMetaOnly = connectedToolkitSlugs.length > 0;
+  const metaTools = selectMetaComposioDeclarations(declarations);
+  const metaOnly = preferMetaOnly && metaTools.length > 0;
+  const selected = metaOnly
+    ? metaTools.slice(0, MAX_COMPOSIO_DECLARATIONS)
+    : capComposioDeclarations(declarations, connectedToolkitSlugs);
+
+  rememberComposioToolNames(selected.map((tool) => tool.name));
+  console.info('[composio/tools] loaded', {
+    toolCount: selected.length,
+    metaOnly,
+    connectedToolkitSlugs,
+    toolNames: selected.map((tool) => tool.name).slice(0, 20),
+  });
+  return {
+    tools: selected,
+    connectedToolkitSlugs,
+    metaOnly,
+  };
 }
 
-export async function executeComposioToolCall(
-  userId: string,
-  name: string,
-  args: Record<string, unknown>,
-): Promise<unknown> {
-  const composio = getComposioClient();
-  const result = await composio.provider.executeToolCall(userId, {
-    name,
-    args,
-  });
-
+function normalizeExecuteResult(result: unknown): unknown {
   if (typeof result === 'string') {
     try {
       return JSON.parse(result) as unknown;
@@ -364,8 +379,34 @@ export async function executeComposioToolCall(
       return result;
     }
   }
-
   return result;
+}
+
+export async function executeComposioToolCall(
+  userId: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    const session = await getOrCreateUserSession(userId);
+    const executed = await session.execute(name, args);
+    if (executed?.error) {
+      throw new Error(executed.error);
+    }
+    return executed?.data ?? executed;
+  } catch (sessionError) {
+    console.warn(
+      '[composio/tools] session.execute failed; falling back to provider',
+      name,
+      sessionError instanceof Error ? sessionError.message : sessionError,
+    );
+    const composio = getComposioClient();
+    const result = await composio.provider.executeToolCall(userId, {
+      name,
+      args,
+    });
+    return normalizeExecuteResult(result);
+  }
 }
 
 export async function userHasActiveComposioConnections(userId: string): Promise<boolean> {
@@ -380,23 +421,40 @@ export function buildComposioCompositionBlock(options: {
   toolCount: number;
   toolNames?: string[];
   connectedToolkitSlugs?: string[];
+  /** True when OAuth apps are pinned but tool declarations were stripped for this turn. */
+  toolsTemporarilyUnavailable?: boolean;
 }): string {
+  const pinned = options.connectedToolkitSlugs ?? [];
+  const hasPins = pinned.length > 0;
   const namePreview =
     options.toolNames && options.toolNames.length > 0
       ? options.toolNames.slice(0, 40).join(', ')
       : '';
 
-  const toolkitLine =
-    options.connectedToolkitSlugs && options.connectedToolkitSlugs.length > 0
-      ? `Pinned connected apps this turn: ${options.connectedToolkitSlugs.join(', ')}.`
-      : 'No OAuth apps are pinned this turn (NO_AUTH / meta tools may still be present).';
+  const toolkitLine = hasPins
+    ? `Pinned connected apps this turn (already linked — do NOT tell the user to connect these): ${pinned.join(', ')}.`
+    : 'No OAuth apps are pinned this turn (NO_AUTH / meta tools may still be present).';
 
-  const availableLine =
-    options.toolCount > 0
-      ? `Connected-app / NO_AUTH tools available this turn (${options.toolCount}): ${namePreview}${
-          options.toolNames && options.toolNames.length > 40 ? ', …' : ''
-        }.`
-      : 'No connected-app toolkit tools are loaded this turn (user may still have none connected, or only need Settings).';
+  let availableLine: string;
+  if (options.toolsTemporarilyUnavailable && hasPins) {
+    availableLine =
+      'Connected-app function tools are temporarily unavailable this turn even though the apps above are linked. Tell the user to try again shortly — do NOT say they need to connect or open Settings for those pinned apps.';
+  } else if (options.toolCount > 0) {
+    availableLine = `Connected-app / router tools available this turn (${options.toolCount}): ${namePreview}${
+      options.toolNames && options.toolNames.length > 40 ? ', …' : ''
+    }.`;
+  } else if (hasPins) {
+    availableLine =
+      'Pinned apps are linked, but no router tools were loaded this turn. Ask the user to try again — do NOT claim they are disconnected.';
+  } else {
+    availableLine =
+      'No connected-app toolkit tools are loaded this turn (user may still have none connected, or only need Settings).';
+  }
+
+  const metaGuidance = hasPins
+    ? `- For pinned apps (e.g. gmail, googlecalendar): use the COMPOSIO_* router tools on this turn (search / get schemas / multi-execute) to find and run the right actions. Never say access is missing for a pinned app.
+- Only suggest Settings → Connection when the user needs an app that is NOT in the pinned list above.`
+    : `- If the user needs an app/action and no matching function tool is available → briefly suggest Settings → Connection. Do not invent OAuth links or claim you completed the action.`;
 
   return `## Connected apps (Composio tools)
 ${toolkitLine}
@@ -404,9 +462,9 @@ ${availableLine}
 
 Composition (no hardcoded app pipelines — use tools that are actually on this turn):
 - You may jumble Gemini native tools, custom tools, and these connected-app tools in any useful order in the same turn.
-- Prefer a matching connected-app tool over native Search/URL when the user's intent clearly fits that toolkit (named app/API, crawl/scrape of a specific service, send/post via a connected account).
+- Prefer a matching connected-app / router tool over native Search/URL when the user's intent clearly fits a pinned toolkit (email, calendar, named app/API, send/post via a connected account).
 - Ambiguous open-web asks (e.g. "what's in the news about AI?") → use native Search; do not call connected-app tools just to discover a search toolkit.
-- If the user needs an app/action and no matching function tool is available (e.g. email but Gmail is not among pinned apps) → briefly suggest Settings → Connection. Do not invent OAuth links or claim you completed the action.
+${metaGuidance}
 - Connected-app gather → minutes-long research: call tools as needed, then delegateBackgroundTask with a rich objective that includes every relevant detail (and any later send/post intent).
 - Native/custom results may feed connected-app tools and vice versa in the same function-call loop.
 
