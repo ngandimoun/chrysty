@@ -507,9 +507,15 @@ export function buildComposioCompositionBlock(options: {
   }
 
   const appGuidance = hasPins
-    ? `- For pinned apps (e.g. gmail, googlecalendar): call the matching direct tools on this turn (e.g. GMAIL_*, GOOGLECALENDAR_*). Never say access is missing for a pinned app.
+    ? `- For pinned apps (e.g. gmail, googlecalendar): you MUST call the matching direct tools on this turn (e.g. GMAIL_*, GOOGLECALENDAR_*) before answering. Never say access is missing for a pinned app.
 - Only suggest Settings → Connection when the user needs an app that is NOT in the pinned list above.`
     : `- If the user needs an app/action and no matching function tool is available → briefly suggest Settings → Connection. Do not invent OAuth links or claim you completed the action.`;
+
+  const hitchBan =
+    options.toolCount > 0
+      ? `- When connected-app tools are listed above, you MUST call a matching tool to get real data before answering.
+- Do NOT invent or speak any of these failure narratives: "technical hitch", "temporary sync delay", "sync delay", "permission error", "permissions aren't set", "try again later", "give it a moment", or similar. Those are not real when tools are available — call the tool instead.`
+      : '';
 
   return `## Connected apps (Composio tools)
 ${toolkitLine}
@@ -520,6 +526,7 @@ Composition (no hardcoded app pipelines — use tools that are actually on this 
 - Prefer a matching connected-app tool over native Search/URL when the user's intent clearly fits a pinned toolkit (email, calendar, named app/API, send/post via a connected account).
 - Ambiguous open-web asks (e.g. "what's in the news about AI?") → use native Search; do not call connected-app tools just to discover a search toolkit.
 ${appGuidance}
+${hitchBan}
 - Connected-app gather → minutes-long research: call tools as needed, then delegateBackgroundTask with a rich objective that includes every relevant detail (and any later send/post intent).
 - Native/custom results may feed connected-app tools and vice versa in the same function-call loop.
 

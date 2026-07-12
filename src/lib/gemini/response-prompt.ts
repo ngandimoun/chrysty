@@ -673,6 +673,42 @@ function stripComposioFunctionTools(tools: GeminiTool[]): GeminiTool[] {
   return tools.filter((tool) => !isComposioCustomTool(tool));
 }
 
+function composioToolName(tool: GeminiTool): string | null {
+  if (!isComposioCustomTool(tool)) return null;
+  return (tool as { name: string }).name;
+}
+
+/** Prefer useful read tools so empty tool-stage can still fetch real data. */
+function pickHighPriorityComposioTool(tools: GeminiTool[]): string | null {
+  const names = tools
+    .map(composioToolName)
+    .filter((name): name is string => Boolean(name));
+  if (names.length === 0) return null;
+
+  const prefer = (predicate: (name: string) => boolean) => names.find(predicate) ?? null;
+
+  return (
+    prefer((name) => name === 'GMAIL_FETCH_EMAILS') ??
+    prefer((name) => name.startsWith('GMAIL_') && /FETCH|GET|LIST|SEARCH/.test(name)) ??
+    prefer((name) => name.startsWith('GMAIL_')) ??
+    prefer(
+      (name) =>
+        name.startsWith('GOOGLECALENDAR_') &&
+        /LIST|GET|EVENTS|CREATE_EVENT|FIND|FREEBUSY/.test(name),
+    ) ??
+    prefer((name) => name.startsWith('GOOGLECALENDAR_')) ??
+    names[0] ??
+    null
+  );
+}
+
+function fallbackArgsForComposioTool(name: string): Record<string, unknown> {
+  if (name === 'GMAIL_FETCH_EMAILS') {
+    return { max_results: 5 };
+  }
+  return {};
+}
+
 async function createVoiceInteraction(
   client: GoogleGenAI,
   params: Parameters<GoogleGenAI['interactions']['create']>[0],
@@ -1021,13 +1057,114 @@ async function runVoiceResponseInteraction(
     allInteractions.push(interaction);
   }
 
+  if (splitComposioFormat && toolResultSummaries.length === 0) {
+    const availableNames = interactionTools
+      .map(composioToolName)
+      .filter((name): name is string => Boolean(name));
+    const nudgeMessage = [
+      'Connected-app tools available this turn:',
+      ...availableNames.slice(0, 24).map((name) => `- ${name}`),
+      '',
+      'The user is waiting for a real result from a connected app.',
+      'You MUST call one of the tools listed above now (function call).',
+      'Do NOT respond with plain text. Do NOT invent "technical hitch", "sync delay", "permission error", "try again later", or similar failures.',
+    ].join('\n');
+
+    let nudgeRan = true;
+    let fallbackRan = false;
+    let fallbackToolName: string | null = null;
+
+    console.info('[response-interaction] composio_tool_nudge', {
+      availableToolCount: availableNames.length,
+    });
+
+    interaction = (await createVoiceInteraction(client, {
+      model,
+      store,
+      system_instruction,
+      input: appendToolResultsToInput(stagedInput, nudgeMessage),
+      ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
+    })) as InteractionWithSteps;
+    allInteractions.push(interaction);
+
+    const nudgeCalls = extractPendingCustomCalls(interaction, completedCallIds);
+    if (nudgeCalls.length > 0) {
+      const results = await executeCustomToolCalls(nudgeCalls, customCtx);
+      toolResultSummaries.push(buildToolResultsSummary(nudgeCalls, results));
+      for (const call of nudgeCalls) {
+        completedCallIds.add(call.id);
+      }
+
+      if (interaction.id) {
+        interaction = (await createVoiceInteraction(client, {
+          model,
+          store,
+          previous_interaction_id: interaction.id,
+          system_instruction,
+          input: results,
+          ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
+        })) as InteractionWithSteps;
+        allInteractions.push(interaction);
+      }
+    }
+
+    if (toolResultSummaries.length === 0 && customCtx.composioUserId) {
+      fallbackToolName = pickHighPriorityComposioTool(interactionTools);
+      if (fallbackToolName) {
+        fallbackRan = true;
+        console.info('[response-interaction] composio_server_fallback', {
+          tool: fallbackToolName,
+        });
+        try {
+          const result = await executeComposioToolCall(
+            customCtx.composioUserId,
+            fallbackToolName,
+            fallbackArgsForComposioTool(fallbackToolName),
+          );
+          const preview =
+            typeof result === 'string'
+              ? result.slice(0, 400)
+              : JSON.stringify(result).slice(0, 400);
+          toolResultSummaries.push(
+            [
+              'Tool results (already executed):',
+              `- ${fallbackToolName}(${JSON.stringify(fallbackArgsForComposioTool(fallbackToolName))}) => ${preview}`,
+              '',
+              'Use these results in your structured JSON response. Do not call custom tools again.',
+            ].join('\n'),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          toolResultSummaries.push(
+            [
+              'Tool results (already executed):',
+              `- ${fallbackToolName} => (error) ${message}`,
+              '',
+              'Report the real tool error briefly. Do not invent sync/permission failures.',
+            ].join('\n'),
+          );
+        }
+      }
+    }
+
+    console.info('[response-interaction] composio_tool_stage', {
+      callCount: toolResultSummaries.length,
+      preview: toolResultSummaries[0]?.slice(0, 180) ?? '(none)',
+      nudgeRan,
+      fallbackRan,
+      fallbackToolName,
+    });
+  }
+
   if (splitComposioFormat) {
     const formatNotes = [
       ...toolResultSummaries,
-      interaction.output_text?.trim()
+      interaction.output_text?.trim() && toolResultSummaries.length === 0
         ? `Assistant notes from tool stage:\n${interaction.output_text.trim()}`
         : '',
-      'Produce the final structured voice JSON now. Do not call any tools.',
+      toolResultSummaries.length > 0
+        ? 'Produce the final structured voice JSON from the tool results above. Do not call any tools. Do not invent hitch/sync/permission failures.'
+        : 'Produce the final structured voice JSON now. Do not call any tools.',
     ]
       .filter(Boolean)
       .join('\n\n');

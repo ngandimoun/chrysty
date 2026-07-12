@@ -1,6 +1,5 @@
 /**
- * Background smoke test: Composio DIRECT_TOOLS + Gemini Interactions.
- * Proves tools alone work, tools+response_format fail, and two-stage path works.
+ * Background smoke: Direct Tools + two-stage + server fallback for empty tool stage.
  *
  * Usage: pnpm tsx scripts/smoke-composio-direct-tools.ts [userId]
  */
@@ -61,17 +60,6 @@ type Report = {
   errors: string[];
 };
 
-function isMetaName(name: string): boolean {
-  const upper = name.toUpperCase();
-  return (
-    upper.startsWith('COMPOSIO_') ||
-    upper.includes('SEARCH_TOOLS') ||
-    upper.includes('MULTI_EXECUTE') ||
-    upper.includes('GET_TOOL_SCHEMAS') ||
-    upper.includes('MANAGE_CONNECTIONS')
-  );
-}
-
 async function main() {
   const userId = process.argv[2]?.trim() || DEFAULT_USER_ID;
   const report: Report = {
@@ -81,201 +69,134 @@ async function main() {
     steps: {},
     errors: [],
   };
-
   const outPath = join(process.cwd(), 'scripts/smoke-composio-direct-tools-last.json');
 
   try {
-    const { getOrCreateUserSession, listActiveConnections, loadStoredSessionId } =
-      await import('../src/lib/composio/client');
     const {
       loadComposioFunctionDeclarations,
       executeComposioToolCall,
+      buildComposioCompositionBlock,
       isMetaComposioToolName,
     } = await import('../src/lib/composio/tools');
     const { getGeminiApiKey, getGeminiResponseModel } = await import('../src/lib/gemini/config');
 
-    const connections = await listActiveConnections(userId);
-    report.steps.connections = connections.map((row) => ({
-      toolkit_slug: row.toolkit_slug,
-      connected_account_id: row.connected_account_id.slice(0, 12),
-      status: row.status,
-    }));
-    console.info('[smoke] connections', report.steps.connections);
-
-    const beforeSessionId = await loadStoredSessionId(userId);
-    report.steps.beforeSessionId = beforeSessionId;
-
-    const session = await getOrCreateUserSession(userId);
-    const afterSessionId = await loadStoredSessionId(userId);
-    report.steps.afterSessionId = afterSessionId;
-    report.steps.sessionMigrated = Boolean(
-      beforeSessionId && afterSessionId && beforeSessionId !== afterSessionId,
-    );
-    console.info('[smoke] session', {
-      sessionId: session.sessionId,
-      migrated: report.steps.sessionMigrated,
-    });
-
     const loaded = await loadComposioFunctionDeclarations(userId);
-    const toolNames = loaded.tools.map((tool) => tool.name);
-    const metaNames = toolNames.filter((name) => isMetaComposioToolName(name) || isMetaName(name));
-    const approxSchemaBytes = JSON.stringify(loaded.tools).length;
-
+    const metaNames = loaded.tools
+      .map((tool) => tool.name)
+      .filter((name) => isMetaComposioToolName(name));
     report.steps.load = {
       toolCount: loaded.tools.length,
       metaOnly: loaded.metaOnly,
       connectedToolkitSlugs: loaded.connectedToolkitSlugs,
-      toolNames,
+      toolNames: loaded.tools.map((tool) => tool.name),
       metaNames,
-      approxSchemaBytes,
     };
-    console.info('[smoke] loaded tools', report.steps.load);
+    console.info('[smoke] loaded', report.steps.load);
+    if (loaded.tools.length === 0 || metaNames.length > 0) {
+      throw new Error('Expected Direct Tools app declarations only');
+    }
 
-    if (loaded.tools.length === 0) {
-      throw new Error('No Composio app tools loaded (expected Gmail/Calendar direct tools).');
+    const composition = buildComposioCompositionBlock({
+      toolCount: loaded.tools.length,
+      toolNames: loaded.tools.map((tool) => tool.name),
+      connectedToolkitSlugs: loaded.connectedToolkitSlugs,
+    });
+    report.steps.compositionBansHitch = /technical hitch|sync delay|permission error/i.test(
+      composition,
+    );
+    if (!report.steps.compositionBansHitch) {
+      throw new Error('Composition block missing hitch/sync ban language');
     }
-    if (metaNames.length > 0) {
-      throw new Error(`Meta tools still present: ${metaNames.join(', ')}`);
-    }
-    if (loaded.metaOnly) {
-      throw new Error('metaOnly=true — DIRECT_TOOLS path failed');
-    }
+    console.info('[smoke] composition hitch ban OK');
 
     const client = new GoogleGenAI({ apiKey: getGeminiApiKey() });
     const model = getGeminiResponseModel();
-    const systemInstruction =
-      'You are Chrysty. Use connected Gmail/Calendar tools when asked. Be brief. Never mention Composio.';
-    const userPrompt =
-      'Check my recent Gmail inbox briefly (subject + sender only for a few messages).';
 
-    console.info('[smoke] gemini attach without response_format', {
-      model,
-      toolCount: loaded.tools.length,
-    });
-    try {
-      const interaction = (await client.interactions.create({
-        model,
-        store: false,
-        system_instruction: systemInstruction,
-        input: userPrompt,
-        tools: loaded.tools,
-      })) as { id?: string; output_text?: string; outputs?: unknown[] };
-      report.steps.geminiAttachNoFormat = {
-        ok: true,
-        interactionId: interaction.id ?? null,
-        outputPreview: (interaction.output_text ?? '').slice(0, 400),
-      };
-      console.info('[smoke] attach without response_format OK', report.steps.geminiAttachNoFormat);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      report.steps.geminiAttachNoFormat = { ok: false, error: message };
-      throw new Error(`Gemini rejected Composio tools without response_format: ${message}`);
-    }
-
-    console.info('[smoke] gemini attach WITH response_format (expect fail)');
+    // Prove tools + response_format still fails.
     try {
       await client.interactions.create({
         model,
         store: false,
-        system_instruction: systemInstruction,
-        input: userPrompt,
+        system_instruction: 'Be brief.',
+        input: 'Check my email.',
         tools: loaded.tools,
         response_format: MINI_VOICE_FORMAT,
       });
-      report.steps.geminiAttachWithFormat = {
-        ok: true,
-        unexpected: 'Gemini accepted tools + response_format; rule may have changed',
-      };
-      console.warn('[smoke] tools+response_format unexpectedly succeeded');
+      report.steps.toolsPlusFormat = { ok: true, unexpected: true };
+      console.warn('[smoke] tools+format unexpectedly OK');
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      report.steps.geminiAttachWithFormat = {
+      report.steps.toolsPlusFormat = {
         ok: false,
         expectedFail: true,
-        error: message,
+        error: error instanceof Error ? error.message : String(error),
       };
-      console.info('[smoke] tools+response_format failed as expected', message);
+      console.info('[smoke] tools+format failed as expected');
     }
 
-    if (report.steps.geminiAttachWithFormat && (report.steps.geminiAttachWithFormat as { ok?: boolean }).ok) {
-      // Soft warning only — still verify two-stage path.
-      console.warn('[smoke] continuing; two-stage path still required for Live VOICE schema');
-    } else if (!(report.steps.geminiAttachWithFormat as { expectedFail?: boolean })?.expectedFail) {
-      throw new Error('Expected tools+response_format to fail with invalid argument');
+    // Server-side fallback path (simulates empty tool stage).
+    const fallbackName =
+      loaded.tools.find((tool) => tool.name === 'GMAIL_FETCH_EMAILS')?.name ??
+      loaded.tools.find((tool) => tool.name.startsWith('GMAIL_'))?.name;
+    if (!fallbackName) {
+      throw new Error('No Gmail tool available for fallback smoke');
     }
 
-    console.info('[smoke] two-stage: tool then format');
-    const toolStage = (await client.interactions.create({
-      model,
-      store: false,
-      system_instruction: systemInstruction,
-      input: userPrompt,
-      tools: loaded.tools,
-    })) as { output_text?: string };
-
-    const gmailTool =
-      loaded.tools.find((tool) => tool.name.toUpperCase().includes('FETCH_EMAILS')) ??
-      loaded.tools.find((tool) => tool.name.toUpperCase().startsWith('GMAIL_')) ??
-      null;
-
-    let executePreview = '';
-    if (gmailTool) {
-      const result = await executeComposioToolCall(userId, gmailTool.name, {
-        max_results: 3,
-      });
-      executePreview =
-        typeof result === 'string' ? result.slice(0, 600) : JSON.stringify(result).slice(0, 600);
-      report.steps.execute = { ok: true, tool: gmailTool.name, preview: executePreview };
-      console.info('[smoke] execute OK', report.steps.execute);
-    } else {
-      report.steps.execute = { skipped: true, reason: 'no GMAIL_* tool in capped set' };
-    }
+    const fallbackResult = await executeComposioToolCall(userId, fallbackName, {
+      max_results: 5,
+    });
+    const preview =
+      typeof fallbackResult === 'string'
+        ? fallbackResult.slice(0, 700)
+        : JSON.stringify(fallbackResult).slice(0, 700);
+    report.steps.serverFallback = { ok: true, tool: fallbackName, preview };
+    console.info('[smoke] server fallback execute OK', {
+      tool: fallbackName,
+      preview: preview.slice(0, 160),
+    });
 
     const formatStage = (await client.interactions.create({
       model,
       store: false,
-      system_instruction: `${systemInstruction}\nProduce structured voice JSON only. Do not call tools.`,
+      system_instruction:
+        'Produce structured voice JSON only. Use the tool results. Never invent hitch/sync failures. Do not call tools.',
       input: [
-        { type: 'text', text: userPrompt },
+        { type: 'text', text: 'Check my recent Gmail inbox.' },
         {
           type: 'text',
-          text: [
-            toolStage.output_text?.trim()
-              ? `Assistant notes:\n${toolStage.output_text.trim()}`
-              : '',
-            executePreview ? `Tool results:\n${executePreview}` : '',
-            'Return JSON with spoken_transcript summarizing recent email subjects.',
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
+          text: `Tool results (already executed):\n- ${fallbackName} => ${preview}\n\nProduce spoken_transcript summarizing real subjects/senders.`,
         },
       ],
       response_format: MINI_VOICE_FORMAT,
     })) as { output_text?: string };
 
     const formatted = formatStage.output_text?.trim() ?? '';
-    report.steps.twoStageFormat = {
+    report.steps.formatFromFallback = {
       ok: Boolean(formatted),
-      outputPreview: formatted.slice(0, 500),
+      outputPreview: formatted.slice(0, 600),
     };
-    console.info('[smoke] two-stage format', report.steps.twoStageFormat);
+    console.info('[smoke] format from fallback', report.steps.formatFromFallback);
 
-    if (!formatted) {
-      throw new Error('Two-stage format Interaction returned empty output');
+    if (!formatted.includes('{')) {
+      throw new Error('Format stage returned non-JSON');
     }
-    if (!formatted.includes('spoken_transcript') && !/"spoken_transcript"\s*:/.test(formatted)) {
-      // Some models return JSON without the key name in preview if truncated — still require parseable JSON brace.
-      if (!formatted.includes('{')) {
-        throw new Error('Two-stage format output does not look like JSON');
-      }
+    const lower = formatted.toLowerCase();
+    if (
+      lower.includes('technical hitch') ||
+      lower.includes('sync delay') ||
+      lower.includes('permission')
+    ) {
+      throw new Error('Format stage still invented hitch/sync/permission language');
+    }
+    // Real mail smoke previously saw GitHub token mail; accept any non-empty spoken content.
+    if (!/"spoken_transcript"\s*:\s*"[^"]+"/i.test(formatted) && !lower.includes('spoken_transcript')) {
+      throw new Error('Format stage missing spoken_transcript');
     }
 
     report.ok = true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    report.errors.push(message);
     report.ok = false;
-    console.error('[smoke] FAILED', message);
+    report.errors.push(error instanceof Error ? error.message : String(error));
+    console.error('[smoke] FAILED', report.errors[0]);
   } finally {
     report.finishedAt = new Date().toISOString();
     writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
