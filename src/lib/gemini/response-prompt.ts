@@ -629,10 +629,23 @@ function logGeminiInteractionError(error: unknown): void {
       : typeof record?.code === 'number'
         ? record.code
         : undefined;
+  const details =
+    record?.error ??
+    record?.details ??
+    record?.data ??
+    (typeof record?.cause !== 'undefined' ? record.cause : undefined);
 
   console.error('[response-interaction] gemini_error', {
     message,
     ...(status !== undefined ? { status } : {}),
+    ...(details !== undefined
+      ? {
+          details:
+            typeof details === 'string'
+              ? details.slice(0, 1500)
+              : JSON.stringify(details).slice(0, 1500),
+        }
+      : {}),
   });
 }
 
@@ -840,6 +853,8 @@ async function runVoiceResponseInteraction(
   let usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
   let interactionTools = usesStagedNativeAndCustom ? customTools : tools;
   let store = toolsRequireStoredInteraction(interactionTools);
+  /** Gemini rejects response_format when Composio functionDeclarations are present. */
+  let splitComposioFormat = tools.some(isComposioCustomTool);
 
   if (shouldDebugResponseInteraction()) {
     console.debug('[response-interaction]', {
@@ -847,11 +862,13 @@ async function runVoiceResponseInteraction(
       toolCount: tools.length,
       composioMetaOnly,
       composioToolCount: tools.filter(isComposioCustomTool).length,
+      splitComposioFormat,
     });
   }
 
   const allInteractions: InteractionWithSteps[] = [];
   const completedCallIds = new Set<string>();
+  const toolResultSummaries: string[] = [];
   let stagedInput = input;
   if (usesStagedNativeAndCustom) {
     const nativeInteraction = await createVoiceInteraction(client, {
@@ -874,19 +891,20 @@ async function runVoiceResponseInteraction(
     );
   }
 
-  const createCustomStage = () =>
+  const createCustomStage = (withResponseFormat: boolean) =>
     createVoiceInteraction(client, {
       model,
       store,
       system_instruction,
       input: stagedInput,
       ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
-      response_format: RESPONSE_FORMAT,
+      ...(withResponseFormat ? { response_format: RESPONSE_FORMAT } : {}),
     });
 
   let interaction: InteractionWithSteps;
   try {
-    interaction = (await createCustomStage()) as InteractionWithSteps;
+    // Composio path: tool stage must omit response_format.
+    interaction = (await createCustomStage(!splitComposioFormat)) as InteractionWithSteps;
   } catch (error) {
     const hadComposio = tools.some(isComposioCustomTool);
     if (!hadComposio || !isGeminiInvalidArgumentError(error)) {
@@ -918,9 +936,10 @@ async function runVoiceResponseInteraction(
       usesStagedNativeAndCustom = nativeTools.length > 0 && customTools.length > 0;
       interactionTools = usesStagedNativeAndCustom ? customTools : tools;
       store = toolsRequireStoredInteraction(interactionTools);
+      splitComposioFormat = tools.some(isComposioCustomTool);
     };
 
-    // Soft-retry: drop Composio app tools (Gemini rejected schemas) and continue honestly.
+    // Soft-retry last resort: drop Composio and use single-stage RESPONSE_FORMAT.
     console.warn(
       '[response-interaction] composio_tools_rejected_retrying_without',
       error instanceof Error ? error.message : String(error),
@@ -933,13 +952,14 @@ async function runVoiceResponseInteraction(
     }, pinned.length > 0
       ? 'Connected apps are linked, but app tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
       : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
-    interaction = (await createCustomStage()) as InteractionWithSteps;
+    interaction = (await createCustomStage(true)) as InteractionWithSteps;
   }
 
   allInteractions.push(interaction);
 
   for (let round = 0; round < MAX_FUNCTION_ROUNDS; round += 1) {
-    if (interaction.output_text?.trim()) {
+    // With split format, free text is not final voice JSON — keep looping while tools remain.
+    if (!splitComposioFormat && interaction.output_text?.trim()) {
       break;
     }
 
@@ -953,10 +973,12 @@ async function runVoiceResponseInteraction(
         round,
         interactionId: interaction.id ?? null,
         pendingTools: calls.map((call) => call.name),
+        splitComposioFormat,
       });
     }
 
     const results = await executeCustomToolCalls(calls, customCtx);
+    toolResultSummaries.push(buildToolResultsSummary(calls, results));
 
     for (const call of calls) {
       completedCallIds.add(call.id);
@@ -970,7 +992,7 @@ async function runVoiceResponseInteraction(
         system_instruction,
         input: results,
         ...(interactionTools.length > 0 ? { tools: interactionTools } : {}),
-        response_format: RESPONSE_FORMAT,
+        ...(splitComposioFormat ? {} : { response_format: RESPONSE_FORMAT }),
       })) as InteractionWithSteps;
 
       allInteractions.push(interaction);
@@ -984,16 +1006,44 @@ async function runVoiceResponseInteraction(
       });
     }
 
-    const fallbackTools = stripCustomFunctionTools(interactionTools);
+    const fallbackTools = splitComposioFormat
+      ? interactionTools
+      : stripCustomFunctionTools(interactionTools);
     interaction = (await createVoiceInteraction(client, {
       model,
       store: false,
       system_instruction,
       input: appendToolResultsToInput(stagedInput, buildToolResultsSummary(calls, results)),
       ...(fallbackTools.length > 0 ? { tools: fallbackTools } : {}),
-      response_format: RESPONSE_FORMAT,
+      ...(splitComposioFormat ? {} : { response_format: RESPONSE_FORMAT }),
     })) as InteractionWithSteps;
 
+    allInteractions.push(interaction);
+  }
+
+  if (splitComposioFormat) {
+    const formatNotes = [
+      ...toolResultSummaries,
+      interaction.output_text?.trim()
+        ? `Assistant notes from tool stage:\n${interaction.output_text.trim()}`
+        : '',
+      'Produce the final structured voice JSON now. Do not call any tools.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    console.info('[response-interaction] composio_format_stage', {
+      toolSummaryCount: toolResultSummaries.length,
+      hadToolStageText: Boolean(interaction.output_text?.trim()),
+    });
+
+    interaction = (await createVoiceInteraction(client, {
+      model,
+      store: false,
+      system_instruction,
+      input: appendToolResultsToInput(stagedInput, formatNotes),
+      response_format: RESPONSE_FORMAT,
+    })) as InteractionWithSteps;
     allInteractions.push(interaction);
   }
 
