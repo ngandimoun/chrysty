@@ -1,4 +1,4 @@
-import { Composio } from '@composio/core';
+import { Composio, SessionPreset } from '@composio/core';
 import { GoogleProvider } from '@composio/google';
 
 import { createAdminClient, isSupabaseConfigured } from '@/lib/supabase/admin';
@@ -76,19 +76,67 @@ export async function saveStoredSessionId(userId: string, sessionId: string): Pr
   }
 }
 
+function rawSessionToolsIncludeMeta(rawTools: unknown): boolean {
+  const list = Array.isArray(rawTools) ? rawTools : [];
+  return list.some((tool) => {
+    if (!tool || typeof tool !== 'object' || !('name' in tool)) return false;
+    const name = (tool as { name?: unknown }).name;
+    return typeof name === 'string' && name.toUpperCase().startsWith('COMPOSIO_');
+  });
+}
+
+async function buildDirectToolsCreateConfig(userId: string) {
+  const connections = await listActiveConnections(userId);
+  const toolkits = connections.map((row) => row.toolkit_slug);
+  return {
+    manageConnections: false as const,
+    sessionPreset: SessionPreset.DIRECT_TOOLS,
+    ...(toolkits.length > 0
+      ? {
+          toolkits,
+          connectedAccounts: buildConnectedAccountsMap(connections),
+        }
+      : {}),
+  };
+}
+
 export async function getOrCreateUserSession(userId: string) {
   const composio = getComposioClient();
   const existingId = await loadStoredSessionId(userId);
+  const createConfig = await buildDirectToolsCreateConfig(userId);
 
   if (existingId) {
     try {
-      return await composio.use(existingId);
+      const session = await composio.use(existingId);
+      try {
+        const tools = await session.tools();
+        if (rawSessionToolsIncludeMeta(tools)) {
+          console.info('[composio/client] migrating meta session to DIRECT_TOOLS', {
+            userId,
+            sessionId: existingId,
+          });
+          try {
+            await session.delete();
+          } catch {
+            // Best-effort; create a new session even if remote delete fails.
+          }
+          const fresh = await composio.create(userId, createConfig);
+          await saveStoredSessionId(userId, fresh.sessionId);
+          return fresh;
+        }
+      } catch (error) {
+        console.warn(
+          '[composio/client] session.tools probe failed; reusing stored session',
+          error instanceof Error ? error.message : error,
+        );
+      }
+      return session;
     } catch {
       // Session may have been deleted remotely — create a fresh one below.
     }
   }
 
-  const session = await composio.create(userId, { manageConnections: false });
+  const session = await composio.create(userId, createConfig);
   await saveStoredSessionId(userId, session.sessionId);
   return session;
 }

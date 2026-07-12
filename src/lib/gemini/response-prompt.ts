@@ -37,7 +37,6 @@ import {
   buildComposioCompositionBlock,
   executeComposioToolCall,
   isComposioFunctionToolName,
-  isMetaComposioToolName,
   loadComposioFunctionDeclarations,
 } from '@/lib/composio/tools';
 import {
@@ -661,21 +660,6 @@ function stripComposioFunctionTools(tools: GeminiTool[]): GeminiTool[] {
   return tools.filter((tool) => !isComposioCustomTool(tool));
 }
 
-function keepMetaComposioToolsOnly(tools: GeminiTool[]): GeminiTool[] {
-  return tools.filter((tool) => {
-    if (!isComposioCustomTool(tool)) return true;
-    const name = (tool as { name: string }).name;
-    return isMetaComposioToolName(name);
-  });
-}
-
-function hasNonMetaComposioTools(tools: GeminiTool[]): boolean {
-  return tools.some((tool) => {
-    if (!isComposioCustomTool(tool)) return false;
-    return !isMetaComposioToolName((tool as { name: string }).name);
-  });
-}
-
 async function createVoiceInteraction(
   client: GoogleGenAI,
   params: Parameters<GoogleGenAI['interactions']['create']>[0],
@@ -936,57 +920,20 @@ async function runVoiceResponseInteraction(
       store = toolsRequireStoredInteraction(interactionTools);
     };
 
-    // Cascade 1: if non-meta app tools were present, retry with meta-only router tools.
-    if (hasNonMetaComposioTools(tools)) {
-      console.warn(
-        '[response-interaction] composio_tools_rejected_retrying_meta_only',
-        error instanceof Error ? error.message : String(error),
-      );
-      const metaOnlyTools = keepMetaComposioToolsOnly(tools);
-      const metaNames = metaOnlyTools
-        .filter(isComposioCustomTool)
-        .map((tool) => (tool as { name: string }).name);
-      rebuildStage(metaOnlyTools, {
-        toolCount: metaNames.length,
-        toolNames: metaNames,
-        connectedToolkitSlugs: pinned,
-      });
-      try {
-        interaction = (await createCustomStage()) as InteractionWithSteps;
-      } catch (metaError) {
-        if (!isGeminiInvalidArgumentError(metaError)) {
-          throw metaError;
-        }
-        console.warn(
-          '[response-interaction] composio_meta_rejected_retrying_without',
-          metaError instanceof Error ? metaError.message : String(metaError),
-        );
-        rebuildStage(stripComposioFunctionTools(tools), {
-          toolCount: 0,
-          toolNames: [],
-          connectedToolkitSlugs: pinned,
-          toolsTemporarilyUnavailable: pinned.length > 0,
-        }, pinned.length > 0
-          ? 'Connected apps are linked, but router tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
-          : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
-        interaction = (await createCustomStage()) as InteractionWithSteps;
-      }
-    } else {
-      // Already meta-only (or only meta failed): drop Composio, keep honest pinned messaging.
-      console.warn(
-        '[response-interaction] composio_tools_rejected_retrying_without',
-        error instanceof Error ? error.message : String(error),
-      );
-      rebuildStage(stripComposioFunctionTools(tools), {
-        toolCount: 0,
-        toolNames: [],
-        connectedToolkitSlugs: pinned,
-        toolsTemporarilyUnavailable: pinned.length > 0,
-      }, pinned.length > 0
-        ? 'Connected apps are linked, but router tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
-        : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
-      interaction = (await createCustomStage()) as InteractionWithSteps;
-    }
+    // Soft-retry: drop Composio app tools (Gemini rejected schemas) and continue honestly.
+    console.warn(
+      '[response-interaction] composio_tools_rejected_retrying_without',
+      error instanceof Error ? error.message : String(error),
+    );
+    rebuildStage(stripComposioFunctionTools(tools), {
+      toolCount: 0,
+      toolNames: [],
+      connectedToolkitSlugs: pinned,
+      toolsTemporarilyUnavailable: pinned.length > 0,
+    }, pinned.length > 0
+      ? 'Connected apps are linked, but app tools could not be attached this turn. Ask the user to try again — do not claim they need to connect those apps in Settings.'
+      : 'Connected-app tools were unavailable for this turn. Continue with native/custom tools only. If the user needed an unconnected app, briefly suggest Settings → Connection.');
+    interaction = (await createCustomStage()) as InteractionWithSteps;
   }
 
   allInteractions.push(interaction);

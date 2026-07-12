@@ -1,9 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import {
+  buildConnectedAccountsMap,
   getComposioAppOrigin,
   getOrCreateUserSession,
   isComposioConfigured,
+  listActiveConnections,
   upsertConnection,
 } from '@/lib/composio/client';
 import { getUserIdFromRequest } from '@/lib/supabase/server';
@@ -47,10 +49,6 @@ export async function GET(request: NextRequest) {
 
   try {
     const session = await getOrCreateUserSession(userId);
-    await session.update({
-      manageConnections: false,
-      connectedAccounts: { [toolkit]: [connectedAccountId] },
-    });
 
     let toolkitName: string | null = null;
     let logoUrl: string | null = null;
@@ -70,6 +68,18 @@ export async function GET(request: NextRequest) {
       logoUrl,
       connectedAccountId,
       sessionId: session.sessionId,
+    });
+
+    const connections = await listActiveConnections(userId);
+    const connectedAccounts = buildConnectedAccountsMap(connections);
+    // Ensure the just-connected account is present even if list is briefly stale.
+    connectedAccounts[toolkit] = [connectedAccountId];
+    const toolkits = Object.keys(connectedAccounts);
+
+    await session.update({
+      manageConnections: false,
+      toolkits,
+      connectedAccounts,
     });
 
     const response = redirectHome(origin, 'connected', toolkit);
